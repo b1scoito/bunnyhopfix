@@ -9,5 +9,5 @@ Open it and run with the game opened. The game will be then patched.
 Because it writes into the game's memory, it is required to have the `-insecure` option on for security reasons.
 
 ### Todo
-- [ ] Linux support
+- [ ] Linux support (port to CMake prior to this)
 - [ ] Code organization
