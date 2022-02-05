@@ -89,13 +89,13 @@ std::uintptr_t memory::read_chain(std::uintptr_t dw_address, const std::vector<u
 	return result;
 }
 
-bool memory::read(uintptr_t dw_address, LPVOID lp_buffer, uintptr_t dw_size) const
+bool memory::read(std::uintptr_t dw_address, LPVOID lp_buffer, std::uintptr_t dw_size) const
 {
 	auto ret = ReadProcessMemory(process_handle, (LPCVOID)dw_address, lp_buffer, dw_size, nullptr);
 	return ret != 0;
 }
 
-bool memory::write(uintptr_t dw_address, LPCVOID lp_buffer, uintptr_t dw_size) const
+bool memory::write(std::uintptr_t dw_address, LPCVOID lp_buffer, std::uintptr_t dw_size) const
 {
 	auto ret = WriteProcessMemory(process_handle, (LPVOID)dw_address, lp_buffer, dw_size, nullptr);
 	return ret != 0;

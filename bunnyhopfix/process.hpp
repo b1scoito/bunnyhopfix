@@ -48,6 +48,7 @@ public:
 		CloseHandle(hnd);
 		return procs;
 	}
+
 	static process get_by_name(std::wstring_view name, const std::vector<process>& cached_procs = {})
 	{
 		if (name.empty())

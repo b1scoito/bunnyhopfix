@@ -1,7 +1,8 @@
-#include "fix.hpp"
+#include "bhopfix.hpp"
 
 // TODO: Port memory class to process
-bool bunnyhopfix::fix() {
+bool bhopfix::fix() 
+{
 	log_debug("Waiting for CS:S to open...");
 
 	process proc = {};
@@ -27,7 +28,7 @@ bool bunnyhopfix::fix() {
 	{
 		g_mem->get_module(L"client.dll", data);
 		std::this_thread::sleep_for(250ms);
-	} while (data.first == 0x0);
+	} while (data.first <= 0x0);
 
 	log_debug("Module address: 0x%x", data.first);
 

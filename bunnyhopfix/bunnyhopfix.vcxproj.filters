@@ -4,9 +4,6 @@
     <Filter Include="util">
       <UniqueIdentifier>{723a05ff-e48b-4723-aac8-66ebfb587c65}</UniqueIdentifier>
     </Filter>
-    <Filter Include="bunnyhopfix">
-      <UniqueIdentifier>{63d9542c-1ed8-4c85-adeb-bc44f377bb48}</UniqueIdentifier>
-    </Filter>
     <Filter Include="pre compiled">
       <UniqueIdentifier>{d045d4b4-ca5d-432a-a19c-796c15bbb0c9}</UniqueIdentifier>
     </Filter>
@@ -22,11 +19,14 @@
     <Filter Include="util\console">
       <UniqueIdentifier>{34b7291e-94d9-418e-8a93-b73d3e429871}</UniqueIdentifier>
     </Filter>
+    <Filter Include="bhopfix">
+      <UniqueIdentifier>{63d9542c-1ed8-4c85-adeb-bc44f377bb48}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="fix.cpp">
-      <Filter>bunnyhopfix</Filter>
+    <ClCompile Include="bhopfix.cpp">
+      <Filter>bhopfix</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>pre compiled</Filter>
@@ -36,8 +36,8 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="fix.hpp">
-      <Filter>bunnyhopfix</Filter>
+    <ClInclude Include="bhopfix.hpp">
+      <Filter>bhopfix</Filter>
     </ClInclude>
     <ClInclude Include="pch.hpp">
       <Filter>pre compiled</Filter>

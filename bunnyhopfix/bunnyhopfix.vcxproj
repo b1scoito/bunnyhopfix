@@ -96,7 +96,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="fix.cpp" />
+    <ClCompile Include="bhopfix.cpp" />
     <ClCompile Include="memory.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
@@ -105,7 +105,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="console.hpp" />
-    <ClInclude Include="fix.hpp" />
+    <ClInclude Include="bhopfix.hpp" />
     <ClInclude Include="memory.hpp" />
     <ClInclude Include="pch.hpp" />
     <ClInclude Include="process.hpp" />
