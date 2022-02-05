@@ -1,26 +1,26 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <Filter Include="util">
-      <UniqueIdentifier>{723a05ff-e48b-4723-aac8-66ebfb587c65}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="pre compiled">
-      <UniqueIdentifier>{d045d4b4-ca5d-432a-a19c-796c15bbb0c9}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="util\process">
-      <UniqueIdentifier>{a7d60e77-92aa-4680-a21b-49c31f92ccc2}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="util\memory">
-      <UniqueIdentifier>{a3dc0754-5d73-43da-a16e-c728583f128c}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="util\var">
-      <UniqueIdentifier>{f7a2844e-5fea-4729-be79-0d405dc9aebc}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="util\console">
-      <UniqueIdentifier>{34b7291e-94d9-418e-8a93-b73d3e429871}</UniqueIdentifier>
-    </Filter>
     <Filter Include="bhopfix">
       <UniqueIdentifier>{63d9542c-1ed8-4c85-adeb-bc44f377bb48}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils">
+      <UniqueIdentifier>{723a05ff-e48b-4723-aac8-66ebfb587c65}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\process">
+      <UniqueIdentifier>{a7d60e77-92aa-4680-a21b-49c31f92ccc2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\memory">
+      <UniqueIdentifier>{a3dc0754-5d73-43da-a16e-c728583f128c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\var">
+      <UniqueIdentifier>{f7a2844e-5fea-4729-be79-0d405dc9aebc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\console">
+      <UniqueIdentifier>{34b7291e-94d9-418e-8a93-b73d3e429871}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="utils\pre compiled">
+      <UniqueIdentifier>{d045d4b4-ca5d-432a-a19c-796c15bbb0c9}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -29,10 +29,10 @@
       <Filter>bhopfix</Filter>
     </ClCompile>
     <ClCompile Include="pch.cpp">
-      <Filter>pre compiled</Filter>
+      <Filter>utils\pre compiled</Filter>
     </ClCompile>
     <ClCompile Include="memory.cpp">
-      <Filter>util\memory</Filter>
+      <Filter>utils\memory</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -40,19 +40,19 @@
       <Filter>bhopfix</Filter>
     </ClInclude>
     <ClInclude Include="pch.hpp">
-      <Filter>pre compiled</Filter>
+      <Filter>utils\pre compiled</Filter>
     </ClInclude>
     <ClInclude Include="process.hpp">
-      <Filter>util\process</Filter>
+      <Filter>utils\process</Filter>
     </ClInclude>
     <ClInclude Include="memory.hpp">
-      <Filter>util\memory</Filter>
+      <Filter>utils\memory</Filter>
     </ClInclude>
     <ClInclude Include="var.hpp">
-      <Filter>util\var</Filter>
+      <Filter>utils\var</Filter>
     </ClInclude>
     <ClInclude Include="console.hpp">
-      <Filter>util\console</Filter>
+      <Filter>utils\console</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
