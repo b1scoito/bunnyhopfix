@@ -1,5 +1,8 @@
 # bunnyhopfix
 CS:S Bhop delay (jump prediction) fixer based on [Alkatraz](https://github.com/alkatrazbhop)'s [BunnyhopAPE](https://github.com/alkatrazbhop/BunnyhopAPE) with modern C++ techniques and planned Linux support.
+
+From [BunnyhopAPE](https://github.com/alkatrazbhop/BunnyhopAPE)'s page:
+- This makes auto-bhop feel a lot less laggy on high ping servers (without allowing you to cheat scroll times like clientside auto-bhop does).
  
 ## How to use
 Download the latest release [here](https://github.com/b1scoito/bunnyhopfix/releases/latest).  
