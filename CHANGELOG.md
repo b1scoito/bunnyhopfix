@@ -92,12 +92,23 @@ is no longer the implementation this project maintains.
   why the entry you are reading is not a list of subjects. See
   [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Releases publish themselves** (`release.yml`). Merging `dev` into `main`
-  with a new `[workspace.package] version` builds Linux and Windows, resolves
-  the notes, creates the `v<version>` tag and publishes: a Linux tarball, a
-  Windows zip, the bare `bunnyhopfix.exe` under the same asset name the C++
-  1.0 release used, and a `SHA256SUMS.txt` over all of them. A merge that does
-  not bump the version is a no-op rather than a duplicate release. Every
-  Windows build — CI, release and nightly — links the CRT statically
+  with a new `[workspace.package] version` builds the release, resolves the
+  notes, creates the `v<version>` tag and publishes: the Linux tarball
+  `bunnyhopfix-<tag>-x86_64-linux.tar.gz` and a `SHA256SUMS.txt` over it. A
+  merge that does not bump the version is a no-op rather than a duplicate
+  release.
+- **No Windows asset is attached to this release, on purpose.** The Windows
+  backend exists and is built by CI on every push and pull request
+  (`build-windows` natively, `cross-windows` via `cargo-zigbuild`), so it
+  cannot rot, and the weekly `nightly` prerelease carries the Windows binary.
+  But the signature is the only part of it that has been proven in the field —
+  the Rust around it (Toolhelp enumeration, the WOW64 PEB command-line read,
+  `VirtualProtectEx`/`WriteProcessMemory`, the Scroll Lock toggle,
+  restore-on-exit) has never executed on Windows. A tool that refuses to write
+  a slot it did not validate should not ship a binary nobody has run.
+  Publishing it waits on verification against a real Windows CS:S install,
+  after which the Windows job and its assets return in a deliberate commit.
+  Every Windows build — CI, cross and nightly — links the CRT statically
   (`-C target-feature=+crt-static`), so `bunnyhopfix.exe` runs without a VC++
   redistributable, exactly like the single-file 1.0 asset.
 - **A weekly schedule** (`schedule.yml`, Mondays 05:00 UTC): a toolchain canary

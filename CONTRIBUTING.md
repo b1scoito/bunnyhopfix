@@ -130,6 +130,18 @@ touching `crates/bunnyhopfix/src/windows.rs` must say whether it was tested on a
 real install, and if it was not, say that too — "compiles only" is an acceptable
 answer, silently implying otherwise is not.
 
+That is also why a tagged release ships no Windows asset. The byte signature is
+upstream C++ bunnyhopfix 1.0's production pattern and shipped to real users, so
+it is not a guess; everything around it — Toolhelp process enumeration, the
+WOW64 PEB command-line read, `VirtualProtectEx`/`WriteProcessMemory`, the
+Scroll Lock toggle and restore-on-exit — has never executed on Windows. The
+backend is still built by CI on every push and pull request, and the weekly
+`nightly` prerelease carries the binary, so nothing rots in the meantime.
+Publishing it is pending the maintainer's own first run against a real Windows
+CS:S install; once that happens the `windows` job goes back into `release.yml`
+and its assets back into the publish list, as a deliberate commit that updates
+`README.md`, `CHANGELOG.md` and this file too — not a hidden config toggle.
+
 ## Cutting a release
 
 Releases are driven entirely by the version in `Cargo.toml`:
@@ -141,13 +153,15 @@ Releases are driven entirely by the version in `Cargo.toml`:
    - reads the version from `Cargo.toml`;
    - **stops cleanly if the tag `v<version>` already exists**, so a `dev` → `main`
      merge without a version bump is a no-op rather than a duplicate release;
-   - builds Linux and Windows;
+   - builds Linux;
    - resolves the release notes — the hand-written `## [<version>]` section if
      there is one, otherwise git-cliff;
    - creates and pushes the tag `v<version>`;
    - commits the regenerated `CHANGELOG.md` back to `main`;
-   - publishes the release with the tarball, the zip, the bare
-     `bunnyhopfix.exe` and `SHA256SUMS.txt`.
+   - publishes the release with the Linux tarball
+     `bunnyhopfix-<tag>-x86_64-linux.tar.gz` and `SHA256SUMS.txt`, and nothing
+     else — see [Windows changes](#windows-changes) for why no Windows asset is
+     attached.
 4. Nothing else is manual. **There is no `git tag` step for a normal release** —
    the tag is an output of the release, not its trigger.
 
@@ -156,12 +170,15 @@ The other two workflows:
 - `ci.yml` — pushes to `dev` and `main`, and every PR. Jobs: `commits`
   (convention check), `lint` (fmt + clippy `-D warnings`), `test`,
   `build-linux`, `build-windows`, `cross-windows` (cargo-zigbuild), `msrv`
-  (1.88), `changelog-preview`.
+  (1.88), `changelog-preview`. The Windows jobs run on every push and PR so the
+  port cannot rot; their binaries are downloadable from the run's artifacts.
 - `schedule.yml` — Mondays 05:00 UTC. A `stable`/`beta`/`nightly` rustc canary
   that opens or updates a single `Weekly canary failed` issue, plus a `nightly`
   rolling prerelease **built from `dev`** that only rebuilds when `dev` has moved
   since the last `nightly` tag. A nightly is CI-clean and nothing more: no live
-  game has run it.
+  game has run it. It carries the Linux *and* Windows builds — unlike a CI
+  artifact, a prerelease asset downloads without a GitHub account, so the
+  Windows binary stays reachable while it is off the tagged releases.
 
 ## What a good bug report contains
 

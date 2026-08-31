@@ -206,6 +206,13 @@ jobs:
             no live game verified it. For a build that a human ran against a real
             Counter-Strike: Source, use the newest `v*` release.
 
+            `bunnyhopfix.exe` appears here and not on a tagged release: its
+            byte signature is upstream's (the C++ bunnyhopfix 1.0 shipped it),
+            but the code around it — process lookup, reading `-insecure` out of
+            the WOW64 PEB, the memory write, the Scroll Lock toggle, restoring
+            the bytes on exit — has not yet been run against a real Windows
+            CS:S. It ships in releases once that verification passes.
+
             Assets are replaced in place, so the download links stay stable and
             always point at the newest rolling build.
           files: |

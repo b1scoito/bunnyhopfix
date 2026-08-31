@@ -92,54 +92,25 @@ jobs:
           path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
           if-no-files-found: error
 
-  windows:
-    name: build windows zip
-    needs: meta
-    if: needs.meta.outputs.release == 'true'
-    runs-on: windows-latest
-    # Statically link the CRT so the shipped `bunnyhopfix.exe` is a true
-    # drop-and-run download with no VC++ redistributable dependency — the
-    # single-file asset users know from the C++ 1.0 release. The tool has no C
-    # dependencies, so this costs nothing. Kept identical to ci.yml's
-    # `build-windows`, which exists to catch a break in this exact build.
-    # Do not remove.
-    env:
-      RUSTFLAGS: -C target-feature=+crt-static
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      # Windows ships the prediction patcher only; the hook crate is an
-      # LD_PRELOAD cdylib and therefore Linux-only (`#![cfg(unix)]`).
-      - name: Build
-        run: cargo build -p bunnyhopfix --release
-
-      - name: Package
-        shell: pwsh
-        env:
-          TAG: ${{ needs.meta.outputs.tag }}
-        run: |
-          if (-not (Test-Path target/release/bunnyhopfix.exe)) { throw "missing bunnyhopfix.exe" }
-          Compress-Archive -Path target/release/bunnyhopfix.exe, README.md, LICENSE `
-            -DestinationPath "bunnyhopfix-$env:TAG-x86_64-windows.zip"
-          # Also shipped bare: `bunnyhopfix.exe` is the asset name the C++ 1.0
-          # release used, so long-time users find what they expect.
-          Copy-Item target/release/bunnyhopfix.exe bunnyhopfix.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: |
-            bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
-            bunnyhopfix.exe
-          if-no-files-found: error
+  # There is deliberately no Windows job here. The Windows backend builds on
+  # every push (ci.yml: `build-windows` natively, `cross-windows` via zig) so it
+  # cannot rot, but nobody has yet run `bunnyhopfix.exe` against a real Windows
+  # Counter-Strike: Source. The byte signature is upstream's — the C++
+  # bunnyhopfix 1.0 shipped it to real users — but the code around it (Toolhelp
+  # enumeration, the WOW64 PEB command-line read, VirtualProtectEx +
+  # WriteProcessMemory, the Scroll Lock toggle, restore-on-exit) has never
+  # executed on Windows. Publishing a binary nobody has run contradicts how the
+  # rest of this tool behaves: it validates every slot against the module file
+  # before writing and disables a feature rather than guess.
+  #
+  # The weekly `nightly` prerelease (schedule.yml) still carries a Windows
+  # build, so the binary exists to be checked. Verification against a real
+  # install is pending; once it passes, this job comes back — as a deliberate
+  # commit, alongside the README/CHANGELOG/CONTRIBUTING changes.
 
   publish:
     name: tag and publish
-    needs: [meta, linux, windows]
+    needs: [meta, linux]
     if: needs.meta.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -233,6 +204,4 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
-            dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
-            dist/bunnyhopfix.exe
             dist/SHA256SUMS.txt
