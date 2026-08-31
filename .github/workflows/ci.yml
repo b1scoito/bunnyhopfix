@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: linux (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --release --all-targets
+
+      - name: Test
+        run: cargo test --all
+
+  windows:
+    name: windows (native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Only the `bunnyhop-ape` bin target is built and tested here.
+      # The crate's other artifact, the `rawinput2` cdylib, is an LD_PRELOAD
+      # library: it is loaded into the game by the dynamic loader's preload
+      # mechanism and pokes at ELF/GOT/RTTI internals through
+      # /proc/self/{maps,mem}. None of that exists on Windows, so the cdylib is
+      # Linux-only by construction and `--all-targets` here would just fail to
+      # compile a library that is never shipped for this platform.
+      - name: Build (bin only)
+        run: cargo build --release --bin bunnyhop-ape
+
+      - name: Test (bin only)
+        run: cargo test --bin bunnyhop-ape
+
+  cross-windows:
+    name: cross-windows (zigbuild)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # This job exists because the Windows port is developed and
+      # smoke-checked from Linux: the maintainer cross-compiles it with
+      # zig as the linker (`cargo zigbuild ... --target
+      # x86_64-pc-windows-gnu`) rather than booting Windows for every edit.
+      # Keeping that exact pipeline in CI means a break in the local
+      # development loop is caught here and not only on the native
+      # `windows` job, whose linker (MSVC) is a different one entirely.
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Add target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Cross-build (bin only)
+        run: cargo zigbuild --release --bin bunnyhop-ape --target x86_64-pc-windows-gnu

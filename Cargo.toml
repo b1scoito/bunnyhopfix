@@ -1,0 +1,23 @@
+[package]
+name = "bunnyhop-ape"
+version = "0.2.0"
+edition = "2021"
+description = "Autobhop Prediction Enabler + RawInput2 (m_rawinput 2) for Counter-Strike: Source (Linux + Windows)"
+license = "GPL-3.0-only"
+
+[lib]
+name = "rawinput2"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bunnyhop-ape"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+strip = true
+panic = "abort"
