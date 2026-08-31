@@ -169,7 +169,11 @@ fn resolve_dlmgr(engine: &elf::Module, engine_base: usize) -> Option<usize> {
     while addr < end {
         let len = chunk.len().min(end - addr);
         if rd(&mut chunk[..len], addr)
-            && let Some(i) = chunk[..len].chunks_exact(8).position(|w| w == want)
+            && let Some(i) = chunk[..len]
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .position(|w| *w == want)
         {
             return Some(addr + i * 8);
         }

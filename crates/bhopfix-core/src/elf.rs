@@ -143,7 +143,7 @@ impl Module {
         let dyn_buf = m.read_off(doff, dsz as usize)?;
         let (mut rela, mut relasz) = (0u64, 0u64);
         let (mut jmprel, mut pltrelsz) = (0u64, 0u64);
-        for e in dyn_buf.chunks_exact(16) {
+        for e in dyn_buf.as_chunks::<16>().0 {
             let tag = i64::from_le_bytes(e[0..8].try_into().ok()?);
             let val = u64::from_le_bytes(e[8..16].try_into().ok()?);
             match tag {
@@ -286,7 +286,7 @@ impl Module {
                 let Some(buf) = self.read_off(base_off + done, want) else {
                     break;
                 };
-                for e in buf.chunks_exact(RELA_ENT) {
+                for e in buf.as_chunks::<RELA_ENT>().0 {
                     let info = u64::from_le_bytes(e[8..16].try_into().unwrap());
                     if (info & 0xffff_ffff) as u32 != R_X86_64_RELATIVE {
                         continue;
@@ -324,7 +324,7 @@ impl Module {
         for &(va, size) in &self.rela {
             let base_off = self.v2o(va)?;
             let buf = self.read_off(base_off, size as usize)?;
-            for e in buf.chunks_exact(RELA_ENT) {
+            for e in buf.as_chunks::<RELA_ENT>().0 {
                 let info = u64::from_le_bytes(e[8..16].try_into().ok()?);
                 let ty = (info & 0xffff_ffff) as u32;
                 if ty != R_X86_64_JUMP_SLOT && ty != R_X86_64_GLOB_DAT {

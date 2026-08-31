@@ -116,6 +116,23 @@ cargo test --workspace
 `clippy` runs with `-D warnings` in CI, so a warning is a failure there even
 though it is not locally.
 
+**CI's clippy is whatever `stable` is today, which may be newer than yours.**
+A newer stable ships new lints, and `clippy::all` is denied workspace-wide, so
+code that is clean on your machine can fail CI on a lint that did not exist
+when you wrote it. This is not hypothetical: 2.0.0's first CI run failed on
+`chunks_exact_to_as_chunks`, added in clippy 1.98, against code that passed on
+1.97. Before pushing something lint-sensitive:
+
+```sh
+rustup update stable
+cargo +nightly clippy --workspace --all-targets -- -D warnings
+```
+
+Nightly clippy sees the lints stable is about to get, so it catches this class
+of failure locally. The weekly canary (`schedule.yml`) exists for the same
+reason: it runs stable, beta and nightly every Monday so toolchain drift is
+reported on a quiet week instead of in the middle of a release.
+
 The resolver tests exercise the *installed* game when it is present and
 self-skip when it is not. On a bare runner they pass without proving anything;
 on a machine with CS:S installed they are the real check — a genuine "did a game
