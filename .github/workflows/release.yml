@@ -120,6 +120,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Both the annotated tag and the changelog commit need a committer
+      # identity. Set it once, here: doing it inside the changelog step means
+      # the tag step breaks whenever a hand-written section wins and that step
+      # is skipped — which is exactly what happened on the first 2.0.0 attempt.
+      - name: Git identity
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
       - uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
@@ -182,8 +191,6 @@ jobs:
         if: steps.notes.outputs.changelog_changed == 'true'
         continue-on-error: true
         run: |
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add CHANGELOG.md
           git commit -m "chore(changelog): ${{ needs.meta.outputs.version }}"
           git push origin HEAD:main ||
