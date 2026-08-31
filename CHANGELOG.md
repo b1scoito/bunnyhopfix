@@ -5,7 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+Entries below are generated from the commit history by
+[git-cliff](https://git-cliff.org); a release may instead carry hand-written
+prose when the change deserves more than a list of commit subjects.
+
+There is no "Unreleased" section: work that has not shipped yet is rendered by
+CI into the *pending release notes* job summary of every push to `dev` and
+every pull request.
 
 ## [2.0.0] - 2026-08-31
 
@@ -77,17 +83,27 @@ is no longer the implementation this project maintains.
   native Windows build of the bin, the `cargo-zigbuild` cross-compile that
   maintainers use locally, and a `cargo check` pinned to 1.88 so the declared
   MSRV stays true.
-- **Tagged releases are built and published automatically** (`release.yml`)
-  from a `v*` tag: a Linux tarball, a Windows zip, the bare `bunnyhopfix.exe`
-  under the same asset name the C++ 1.0 release used, and a `SHA256SUMS.txt`
-  over all of them. The release body is the matching section of this file.
-  Every Windows build — CI, release and nightly — links the CRT statically
+- **A `dev` → `main` branch model with a commit-derived changelog.** `dev` is
+  where work lands; `main` only moves when a release is cut. Commit subjects
+  are Conventional Commits, enforced by a `commits` job on every push and pull
+  request, and [git-cliff](https://git-cliff.org) (`cliff.toml`) turns them
+  into this file — one commit, one bullet, grouped by type. A hand-written
+  `## [x.y.z]` section still wins when a release deserves real prose, which is
+  why the entry you are reading is not a list of subjects. See
+  [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Releases publish themselves** (`release.yml`). Merging `dev` into `main`
+  with a new `[workspace.package] version` builds Linux and Windows, resolves
+  the notes, creates the `v<version>` tag and publishes: a Linux tarball, a
+  Windows zip, the bare `bunnyhopfix.exe` under the same asset name the C++
+  1.0 release used, and a `SHA256SUMS.txt` over all of them. A merge that does
+  not bump the version is a no-op rather than a duplicate release. Every
+  Windows build — CI, release and nightly — links the CRT statically
   (`-C target-feature=+crt-static`), so `bunnyhopfix.exe` runs without a VC++
   redistributable, exactly like the single-file 1.0 asset.
 - **A weekly schedule** (`schedule.yml`, Mondays 05:00 UTC): a toolchain canary
   across `stable`/`beta`/`nightly` rustc that files or updates one
   `Weekly canary failed` issue instead of spamming, and a `nightly` rolling
-  prerelease that rebuilds from `main` only when `main` has actually moved.
+  prerelease that rebuilds from `dev` only when `dev` has actually moved.
 - Dependabot for `cargo` and `github-actions`, grouped so the tree's single
   dependency cannot generate weekly noise.
 - `--version` / `-V` on both backends, printing the crate version and whether

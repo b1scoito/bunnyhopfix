@@ -1,0 +1,99 @@
+# git-cliff — CHANGELOG.md is generated from the commit history.
+#
+# The contract: one commit is one changelog bullet. That only works if commit
+# subjects are Conventional Commits, which `ci.yml`'s `commits` job enforces on
+# every push to `dev` and every pull request.
+#
+# Generation happens at release time, not on every push, so `dev` never
+# collects bot commits. CI renders the pending notes into the job summary
+# instead. See CONTRIBUTING.md.
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Entries below are generated from the commit history by
+[git-cliff](https://git-cliff.org); a release may instead carry hand-written
+prose when the change deserves more than a list of commit subjects.
+
+There is no "Unreleased" section: work that has not shipped yet is rendered by
+CI into the *pending release notes* job summary of every push to `dev` and
+every pull request.
+"""
+
+# One version section. `version` is the tag being released, or "Unreleased"
+# when git-cliff is run with --unreleased and no --tag.
+#
+# Deliberately API-free: links are built from the configured owner/repo, so
+# generating a changelog needs neither a token nor network access.
+# `trim` strips leading whitespace from every rendered line, so each bullet is
+# emitted as one self-contained line — no continuations, no nested indentation.
+body = """
+{% macro remote_url() %}https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}{% endmacro %}
+{% if version %}## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}{% else %}## [Unreleased]{% endif %}
+{% set breaking = commits | filter(attribute="breaking", value=true) -%}
+{% if breaking | length > 0 %}
+### Breaking changes
+{% for commit in breaking %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.breaking_description | default(value=commit.message) | upper_first }}
+{%- endfor %}
+{% endif %}
+{%- for group, commits in commits | group_by(attribute="group") %}
+
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+{%- endfor %}
+{%- endfor %}
+"""
+
+footer = ""
+trim = true
+postprocessors = []
+
+[remote.github]
+# Used to build the commit links above. No API call is made.
+owner = "b1scoito"
+repo = "bunnyhopfix"
+
+[git]
+conventional_commits = true
+# A subject that is not conventional is dropped rather than dumped raw into the
+# changelog. CI rejects those on the way in, so this only ever hides history
+# that predates the convention.
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+filter_commits = true
+tag_pattern = "v[0-9]*"
+topo_order = false
+sort_commits = "newest"
+
+commit_parsers = [
+  # Release chores are bookkeeping, not history.
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore\\(changelog\\)", skip = true },
+  { message = "^Merge (branch|pull request|remote-tracking)", skip = true },
+
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^revert", group = "Reverted" },
+  { message = "^docs", group = "Documentation" },
+
+  # Kept out of the changelog: real work, but not user-visible.
+  { message = "^test", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^build", skip = true },
+  { message = "^chore", skip = true },
+]
+
+[bump]
+features_always_bump_minor = true
+breaking_always_bump_major = true

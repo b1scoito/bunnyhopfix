@@ -1,15 +1,13 @@
 name: Release
 
+# Releases are cut by merging `dev` into `main`. The version in the root
+# Cargo.toml is the trigger: if `v<version>` is not tagged yet, this publishes
+# it. A merge that does not bump the version is a no-op, not a duplicate
+# release, so ordinary merges to `main` are safe.
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Existing tag to build and publish (e.g. v2.0.0)'
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -19,53 +17,52 @@ env:
 
 jobs:
   meta:
-    name: resolve tag
+    name: resolve version
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.t.outputs.tag }}
-      prerelease: ${{ steps.t.outputs.prerelease }}
+      release: ${{ steps.v.outputs.release }}
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
 
-      # One place decides the tag, so the tarball name, the zip name, the
-      # checksum file and the release title can never disagree.
-      - id: t
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          case "$TAG" in
-            *-rc*|*-beta*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
-            *)             echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
-          esac
-
-      # A tag that disagrees with the manifest ships a binary whose version is
-      # not the version anyone downloaded. Fail here, before anything is built.
-      - name: Tag matches the workspace version
-        env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+      # One place decides the version, so the tag, the tarball name, the zip
+      # name, the checksum file and the release title can never disagree.
+      - id: v
         run: |
           VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           if [ -z "$VER" ]; then
             echo "::error::no version found in [workspace.package] of Cargo.toml"
             exit 1
           fi
-          if [ "$VER" != "${TAG#v}" ]; then
-            echo "::error::tag $TAG does not match workspace version $VER"
-            exit 1
+          TAG="v$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          case "$VER" in
+            *-rc*|*-beta*|*-alpha*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)                      echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG already exists — nothing to release. Bump [workspace.package] version on dev to cut a new one."
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::releasing $TAG"
           fi
-          echo "tag $TAG matches workspace version $VER"
 
   linux:
     name: build linux tarball
     needs: meta
+    if: needs.meta.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
+      # The tag does not exist yet — it is created by `publish`, only after
+      # both platforms have built. A failed build must not leave a dangling tag.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.meta.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -98,6 +95,7 @@ jobs:
   windows:
     name: build windows zip
     needs: meta
+    if: needs.meta.outputs.release == 'true'
     runs-on: windows-latest
     # Statically link the CRT so the shipped `bunnyhopfix.exe` is a true
     # drop-and-run download with no VC++ redistributable dependency — the
@@ -109,8 +107,6 @@ jobs:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.meta.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -142,15 +138,20 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: publish release
+    name: tag and publish
     needs: [meta, linux, windows]
+    if: needs.meta.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.meta.outputs.tag }}
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
 
       - uses: actions/download-artifact@v4
         with:
@@ -164,33 +165,70 @@ jobs:
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      # Pull this version's section out of CHANGELOG.md: everything between
-      # `## [x.y.z]` and the next `## [` heading. If the section is missing we
-      # leave the body empty and let GitHub auto-generate the notes instead.
+      # Two sources of release notes, in priority order:
+      #  1. a hand-written `## [x.y.z]` section already in CHANGELOG.md — used
+      #     verbatim, which is how a release that deserves real prose gets it;
+      #  2. otherwise git-cliff, turning every commit since the last tag into
+      #     the section and writing it into CHANGELOG.md.
       - name: Release notes
         id: notes
         env:
           TAG: ${{ needs.meta.outputs.tag }}
+          VER: ${{ needs.meta.outputs.version }}
         run: |
-          VER="${TAG#v}"
           awk -v ver="$VER" '
             $0 ~ "^## \\[" ver "\\]" { inside = 1; next }
             inside && /^## \[/       { exit }
             inside                   { print }
           ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+
           if [ -s notes.md ]; then
-            echo "generate=false" >> "$GITHUB_OUTPUT"
+            echo "hand-written [$VER] section found; using it verbatim"
+            echo "changelog_changed=false" >> "$GITHUB_OUTPUT"
           else
-            echo "no [$VER] section in CHANGELOG.md; falling back to generated notes"
-            echo "generate=true" >> "$GITHUB_OUTPUT"
+            echo "no [$VER] section; generating one from the commit history"
+            git cliff --config cliff.toml --unreleased --tag "$TAG" \
+              --strip header > notes.md
+            if [ ! -s notes.md ]; then
+              echo "::error::nothing to release: no changelog-worthy commits since the last tag"
+              exit 1
+            fi
+            # --prepend, never --output: the new section is inserted under the
+            # header and every existing section is preserved. Regenerating the
+            # whole file would delete the hand-written 2.0.0 and 0.2.0 entries,
+            # whose commits predate the convention and would render as nothing.
+            git cliff --config cliff.toml --unreleased --tag "$TAG" \
+              --prepend CHANGELOG.md --output /dev/null
+            echo "changelog_changed=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "--- release notes ---"
+          cat notes.md
+
+      # Best-effort: a protected `main` can reject this push, and that must not
+      # cost us the release, which is already fully built. If it fails, the
+      # notes still ship and CHANGELOG.md can be synced from `dev`.
+      - name: Commit the regenerated changelog
+        if: steps.notes.outputs.changelog_changed == 'true'
+        continue-on-error: true
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add CHANGELOG.md
+          git commit -m "chore(changelog): ${{ needs.meta.outputs.version }}"
+          git push origin HEAD:main ||
+            echo "::warning::could not push CHANGELOG.md to main (branch protection?); release continues"
+
+      # Tag the commit that was actually built and published.
+      - name: Tag
+        run: |
+          git tag -a "${{ needs.meta.outputs.tag }}" -m "${{ needs.meta.outputs.tag }}"
+          git push origin "refs/tags/${{ needs.meta.outputs.tag }}"
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
           body_path: notes.md
-          generate_release_notes: ${{ steps.notes.outputs.generate }}
           prerelease: ${{ needs.meta.outputs.prerelease }}
           fail_on_unmatched_files: true
           files: |

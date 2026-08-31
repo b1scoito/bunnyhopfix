@@ -1,8 +1,9 @@
 name: Weekly
 
 # The release cadence for a tool that patches a game nobody controls:
-#   * tagged releases are cut by hand (`git tag v2.0.1 && git push --tags`),
-#   * `nightly` refreshes from `main` every Monday when there are new commits,
+#   * tagged releases happen when `dev` is merged into `main` with a new
+#     version in Cargo.toml (see release.yml),
+#   * `nightly` refreshes from `dev` every Monday when there are new commits,
 #   * the canary reports toolchain rot even in a week with no commits at all.
 on:
   schedule:
@@ -100,9 +101,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # `dev` is where work lands; `main` only moves on a release, so a nightly
+      # built from `main` would just be the last release rebuilt.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: dev
           fetch-depth: 0
 
       # Skip cleanly in a quiet week: republishing an identical build only
@@ -195,9 +198,9 @@ jobs:
           prerelease: true
           fail_on_unmatched_files: true
           body: |
-            Rolling build of `main` at
+            Rolling build of `dev` at
             [`${{ steps.chk.outputs.short }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.chk.outputs.sha }}),
-            rebuilt automatically every Monday when `main` has moved.
+            rebuilt automatically every Monday when `dev` has moved.
 
             **This is not a tested release.** It has passed CI and nothing else:
             no live game verified it. For a build that a human ran against a real
