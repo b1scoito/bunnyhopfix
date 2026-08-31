@@ -1,4 +1,4 @@
-//! bunnyhop-ape-linux — Autobhop Prediction Enabler for Counter-Strike: Source (Linux)
+//! Linux backend — Autobhop Prediction Enabler for Counter-Strike: Source.
 //!
 //! Port of the idea from alkatrazbhop/BunnyhopAPE and rtldg/RawInput2BunnyhopAPE
 //! to Linux, in Rust.
@@ -746,13 +746,13 @@ fn pulse_socket_present() -> bool {
 
 fn print_usage() {
     eprintln!(
-        "bunnyhop-ape-linux — Autobhop Prediction Enabler for CS:S (Linux)\n\
+        "bunnyhop-ape — Autobhop Prediction Enabler for CS:S (Linux)\n\
          \n\
          USAGE:\n\
-         \x20 bunnyhop-ape-linux [-- extra game args]   launch CS:S with -insecure and patch it\n\
-         \x20 bunnyhop-ape-linux --attach [pid]           patch a running game (auto-finds pid; needs sudo)\n\
-         \x20 bunnyhop-ape-linux --scan-file <path>      offline: verify signatures against client.so\n\
-         \x20 bunnyhop-ape-linux --fix-maps [game-root]  extract uppercase-packed pak content of all maps\n\
+         \x20 bunnyhop-ape [-- extra game args]   launch CS:S with -insecure and patch it\n\
+         \x20 bunnyhop-ape --attach [pid]         patch a running game (auto-finds pid; needs sudo)\n\
+         \x20 bunnyhop-ape --scan-file <path>     offline: verify signatures against client.so\n\
+         \x20 bunnyhop-ape --fix-maps [game-root] extract uppercase-packed pak content of all maps\n\
          \x20                                             as lowercase loose files (Linux pink-texture fix)\n\
          \n\
          Toggle prediction at runtime with Scroll Lock or: kill -USR1 <pid of this tool>\n\
@@ -880,7 +880,7 @@ pub fn main() {
             println!("[*] case-fix: extracted {fixed} uppercase-packed file(s) from map pakfiles");
         }
         println!("[*] launching CS:S with -insecure -novid ...");
-        println!("[*] tip: run this tool via `gamemoderun bunnyhop-ape-linux` to keep gamemode");
+        println!("[*] tip: run this tool via `gamemoderun bunnyhop-ape` to keep gamemode");
         saved_modes = save_display_modes();
         match launch_css(&css_dir, &extra) {
             Ok(c) => {
