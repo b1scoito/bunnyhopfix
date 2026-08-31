@@ -1,0 +1,21 @@
+[package]
+name = "bhopfix-hook"
+description = "LD_PRELOAD hook library for bunnyhopfix: tick-aligned raw mouse input, viewpunch removal, fastdl map hijack, engine console glue"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Injected into the game with LD_PRELOAD -> target/release/libbhopfix.so.
+# Linux only: the whole crate is `#![cfg(unix)]`.
+[lib]
+name = "bhopfix"
+crate-type = ["cdylib"]
+
+[dependencies]
+bhopfix-core.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

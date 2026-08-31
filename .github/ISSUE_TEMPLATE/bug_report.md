@@ -11,9 +11,9 @@ labels: bug
 > for example:
 >
 > ```
-> [rawinput2] FAILED to hook GetRawMouseAccumulators: not found in ...'s vtable (game updated?)
-> [rawinput2] CreateMove slot +0x... NOT hooked: holds 0x..., expected 0x... (game updated?)
-> [rawinput2] viewpunch: code at 0x... differs from client.so; NOT patching
+> [bhopfix] FAILED to hook GetRawMouseAccumulators: not found in ...'s vtable (game updated?)
+> [bhopfix] CreateMove slot +0x... NOT hooked: holds 0x..., expected 0x... (game updated?)
+> [bhopfix] viewpunch: code at 0x... differs from client.so; NOT patching
 > ```
 >
 > A game update shows up *exactly* there: the tool resolves and validates every
@@ -32,10 +32,11 @@ labels: bug
     AppID 240. The game log prints a line like `Version: 9530147` early in
     startup (also visible in the console with `version`). Please give the
     number, not "latest". -->
-- **Tool version / commit:** <!-- release tag, or `git rev-parse --short HEAD` -->
-- **Launched how:** <!-- through the tool (`./bunnyhop-ape`), or `--attach` to a
+- **Tool version / commit:** <!-- release tag, `nightly` build date, or
+    `git rev-parse --short HEAD` -->
+- **Launched how:** <!-- through the tool (`./bunnyhopfix`), or `--attach` to a
     running game -->
-- **Was `-insecure` used?** <!-- yes / no. Both components refuse to work
+- **Was `-insecure` used?** <!-- yes / no. Every component refuses to work
     without it; the tool adds it itself when it launches the game. -->
 
 ## Full tool output
@@ -43,7 +44,7 @@ labels: bug
 Run with debug logging on and paste **everything**, from the first line:
 
 ```sh
-RAWINPUT2_DEBUG=1 ./bunnyhop-ape 2>&1 | tee /tmp/bhop.log
+BHOPFIX_DEBUG=1 ./bunnyhopfix 2>&1 | tee /tmp/bhopfix.log
 ```
 
 <details>
@@ -91,7 +92,7 @@ If the report is "the jump prediction did nothing", this verifies the
 running the game:
 
 ```sh
-./bunnyhop-ape --scan-file "<steam>/steamapps/common/Counter-Strike Source/cstrike/bin/linux64/client.so"
+./bunnyhopfix --scan-file "<steam>/steamapps/common/Counter-Strike Source/cstrike/bin/linux64/client.so"
 ```
 
 <details>

@@ -2,14 +2,24 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A new push to the same ref makes the in-flight run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  linux:
-    name: linux (native)
+  lint:
+    name: fmt + clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,42 +31,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all --check
 
+      # The workspace denies clippy::all and warns on missing docs; -D warnings
+      # makes both fatal here rather than in a reviewer's terminal.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Build
-        run: cargo build --release --all-targets
-
-      - name: Test
-        run: cargo test --all
-
-  windows:
-    name: windows (native)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      # Only the `bunnyhop-ape` bin target is built and tested here.
-      # The crate's other artifact, the `rawinput2` cdylib, is an LD_PRELOAD
-      # library: it is loaded into the game by the dynamic loader's preload
-      # mechanism and pokes at ELF/GOT/RTTI internals through
-      # /proc/self/{maps,mem}. None of that exists on Windows, so the cdylib is
-      # Linux-only by construction and `--all-targets` here would just fail to
-      # compile a library that is never shipped for this platform.
-      - name: Build (bin only)
-        run: cargo build --release --bin bunnyhop-ape
-
-      - name: Test (bin only)
-        run: cargo test --bin bunnyhop-ape
-
-  cross-windows:
-    name: cross-windows (zigbuild)
+  test:
+    name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,14 +48,96 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # This job exists because the Windows port is developed and
-      # smoke-checked from Linux: the maintainer cross-compiles it with
-      # zig as the linker (`cargo zigbuild ... --target
-      # x86_64-pc-windows-gnu`) rather than booting Windows for every edit.
-      # Keeping that exact pipeline in CI means a break in the local
-      # development loop is caught here and not only on the native
-      # `windows` job, whose linker (MSVC) is a different one entirely.
-      - uses: mlugg/setup-zig@v1
+      # The pattern-engine tests are self-contained. The resolver tests open the
+      # *installed* Counter-Strike: Source and re-derive every signature and
+      # RTTI lookup against it, and self-skip when the game is absent — which is
+      # why they pass on a bare runner. On a maintainer's machine the same
+      # `cargo test` is a genuine "did a game update break the lookups?" check.
+      - name: Test
+        run: cargo test --workspace
+
+  build-linux:
+    name: build (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      # Both artifacts, or the release workflow would fail later instead of now.
+      - name: Check artifacts
+        run: |
+          test -x target/release/bunnyhopfix
+          test -f target/release/libbhopfix.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bunnyhopfix-linux
+          path: |
+            target/release/bunnyhopfix
+            target/release/libbhopfix.so
+          if-no-files-found: error
+
+  build-windows:
+    name: build (windows)
+    runs-on: windows-latest
+    # Statically link the CRT so `bunnyhopfix.exe` is a true drop-and-run
+    # download with no VC++ redistributable dependency — the single-file asset
+    # users know from the C++ 1.0 release. The tool has no C dependencies, so
+    # this costs nothing. It MUST match the release workflow's Windows jobs:
+    # this job exists to catch a break in exactly that build. Do not remove.
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Only the `bunnyhopfix` bin. The hook crate is an LD_PRELOAD cdylib that
+      # pokes at ELF/GOT/RTTI through /proc/self/{maps,mem}; it is `#![cfg(unix)]`
+      # and is not part of a Windows release.
+      - name: Build
+        run: cargo build -p bunnyhopfix --release
+
+      - name: Check artifact
+        shell: bash
+        run: test -f target/release/bunnyhopfix.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bunnyhopfix-windows
+          path: target/release/bunnyhopfix.exe
+          if-no-files-found: error
+
+  cross-windows:
+    name: cross-build (windows-gnu via zig)
+    runs-on: ubuntu-latest
+    # Same static CRT as `build-windows` and as the release/nightly Windows
+    # assets; this job guards the cross path that the nightly build ships from.
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The Windows backend is developed from Linux: the maintainer
+      # cross-compiles it with zig as the linker instead of booting Windows for
+      # every edit. Guarding that exact pipeline here means a break in the local
+      # development loop is caught in CI and not only on `build-windows`, whose
+      # linker (MSVC) is a different one entirely.
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
 
@@ -83,5 +148,20 @@ jobs:
       - name: Add target
         run: rustup target add x86_64-pc-windows-gnu
 
-      - name: Cross-build (bin only)
-        run: cargo zigbuild --release --bin bunnyhop-ape --target x86_64-pc-windows-gnu
+      - name: Cross-build
+        run: cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keeps the manifests' `rust-version = "1.88"` honest. Edition 2024 needs
+      # 1.85; 1.88 is the floor for the let-chains and `#[expect]` the tree uses.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --workspace

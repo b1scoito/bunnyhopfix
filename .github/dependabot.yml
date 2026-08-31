@@ -1,0 +1,39 @@
+version: 2
+
+updates:
+  # The whole tree has exactly one third-party dependency (`libc`), and that is
+  # deliberate. Group patch/minor bumps so the rare update arrives as one PR
+  # instead of one per crate per week.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:30'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: deps
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Actions are pinned to major tags in the workflows, so this mostly catches
+  # the occasional major bump (v4 -> v5) that a floating tag would hide.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:30'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch

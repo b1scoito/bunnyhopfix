@@ -5,7 +5,7 @@
 //! top times to the tool's terminal log. Read-only, best-effort, and fully
 //! off the engine thread so a slow API never stalls a connect.
 //!
-//! Output goes to stderr (where the tool's other `[rawinput2]` logs go and the
+//! Output goes to stderr (where the tool's other `[bhopfix]` logs go and the
 //! user is already watching). Printing into the in-game console would need an
 //! engine command-buffer hook we don't have yet.
 
@@ -54,10 +54,10 @@ pub fn show_wr(mapname: &str) {
     }
     st.inflight = true;
     drop(st);
-    if std::thread::Builder::new().spawn(worker).is_err() {
-        if let Ok(mut st) = STATE.lock() {
-            st.inflight = false;
-        }
+    if std::thread::Builder::new().spawn(worker).is_err()
+        && let Ok(mut st) = STATE.lock()
+    {
+        st.inflight = false;
     }
 }
 

@@ -10,11 +10,6 @@
 //! code *is*, so they survive relayout; when one genuinely stops matching, the
 //! feature disables itself instead of writing somewhere wrong.
 
-// This module is compiled into both crates (the patcher binary and the
-// LD_PRELOAD library) and into both platform backends, each of which uses a
-// different subset of it, so per-crate dead-code warnings here are noise.
-#![allow(dead_code)]
-
 /// A byte pattern with wildcards, written the way every disassembler prints it:
 /// `"F3 0F 58 ?? 74 12 00 00"`. `??` (or `?`) matches any byte.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +31,12 @@ impl Pattern {
         (!out.is_empty()).then_some(Pattern(out))
     }
 
+    /// Length of the pattern in bytes. A match is always exactly this long —
+    /// wildcards match *a* byte, never "zero or more".
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "Pattern::parse rejects the empty pattern, so is_empty would be a constant false"
+    )]
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -49,6 +50,7 @@ impl Pattern {
             .filter_map(|(i, b)| b.is_none().then_some(i))
     }
 
+    /// True if the pattern matches `hay` starting at `at`.
     pub fn matches_at(&self, hay: &[u8], at: usize) -> bool {
         hay.len() >= at + self.0.len()
             && self
@@ -58,15 +60,19 @@ impl Pattern {
                 .all(|(p, &got)| p.is_none_or(|want| want == got))
     }
 
+    /// Offset of the first match at or after `from`.
     pub fn find_from(&self, hay: &[u8], from: usize) -> Option<usize> {
         let last = hay.len().checked_sub(self.0.len())?;
         (from..=last).find(|&i| self.matches_at(hay, i))
     }
 
+    /// Offset of the first match anywhere in `hay`.
     pub fn find(&self, hay: &[u8]) -> Option<usize> {
         self.find_from(hay, 0)
     }
 
+    /// Offsets of every match, including overlapping ones. Used both to patch
+    /// all copies of an inlined check and to prove a pattern is unambiguous.
     pub fn find_all(&self, hay: &[u8]) -> Vec<usize> {
         let mut out = Vec::new();
         let mut at = 0;

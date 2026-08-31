@@ -3,9 +3,22 @@
 version = 4
 
 [[package]]
-name = "bunnyhop-ape"
-version = "0.2.0"
+name = "bhopfix-core"
+version = "2.0.0"
+
+[[package]]
+name = "bhopfix-hook"
+version = "2.0.0"
 dependencies = [
+ "bhopfix-core",
+ "libc",
+]
+
+[[package]]
+name = "bunnyhopfix"
+version = "2.0.0"
+dependencies = [
+ "bhopfix-core",
  "libc",
 ]
 

@@ -1,7 +1,8 @@
-//! bunnyhop-ape — Autobhop Prediction Enabler for Counter-Strike: Source.
+//! bunnyhopfix — CS:S bhop delay (jump prediction) fixer.
 //!
-//! Port of the idea from alkatrazbhop/BunnyhopAPE and rtldg/RawInput2BunnyhopAPE
-//! to Rust, for Linux and Windows.
+//! Rust rewrite of b1scoito/bunnyhopfix, with the Linux support and the code
+//! organization its TODO asked for. The idea itself comes from
+//! alkatrazbhop/BunnyhopAPE and the rtldg/RawInput2BunnyhopAPE fork.
 //!
 //! What it patches: `CGameMovement::CheckJumpButton` /
 //! `CCSGameMovement::CheckJumpButton` contain
@@ -18,25 +19,21 @@
 //! immediately. It does NOT let you cheat scroll times — the server still
 //! decides what actually happens.
 //!
-//! Every address involved is found by byte pattern at runtime (see `sig`);
-//! nothing is hard-coded to a game build. The game must run with `-insecure`,
-//! because this writes into game memory.
+//! Every address involved is found by byte pattern at runtime (see
+//! [`bhopfix_core::sig`]); nothing is hard-coded to a game build. The game must
+//! run with `-insecure`, because this writes into game memory.
 //!
 //! Platform split:
-//!   * Linux — full implementation: prediction patcher plus `librawinput2.so`
+//!   * Linux — full implementation: prediction patcher plus `libbhopfix.so`
 //!     (LD_PRELOAD) for momentum-mod style `m_rawinput 2`, viewpunch removal,
 //!     fastdl map hijack and engine console glue.
 //!   * Windows — barebones: the prediction patcher only.
 
-mod sig;
-
 #[cfg(unix)]
 mod linux;
-#[cfg(unix)]
-mod pakfix;
 
 #[cfg(windows)]
-mod win;
+mod windows;
 
 #[cfg(unix)]
 fn main() {
@@ -45,5 +42,5 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    win::main();
+    windows::main();
 }

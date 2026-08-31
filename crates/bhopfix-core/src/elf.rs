@@ -73,6 +73,11 @@ struct Seg {
     flags: u32,
 }
 
+/// A game module (`client.so`, `engine.so`, `launcher.so`) read from disk.
+///
+/// Everything is resolved against the *file*, then rebased onto the module's
+/// load address by the caller. That is deliberate: the file is the ground
+/// truth a hook validates the live process against before writing to it.
 pub struct Module {
     f: File,
     segs: Vec<Seg>,
@@ -84,6 +89,8 @@ pub struct Module {
 }
 
 impl Module {
+    /// Parse an ELF64 shared object: its segments, RELA tables and symbol
+    /// table. Returns None for anything that is not a 64-bit ELF.
     pub fn open(path: &str) -> Option<Module> {
         let f = File::open(path).ok()?;
         let mut hdr = [0u8; 64];
@@ -175,10 +182,13 @@ impl Module {
             .map(|s| s.off + (va - s.va))
     }
 
+    /// Read `len` bytes at a link-time vaddr, or None if it is not backed by
+    /// file contents (past end-of-file in .bss, or outside every segment).
     pub fn read_va(&self, va: usize, len: usize) -> Option<Vec<u8>> {
         self.read_off(self.v2o(va as u64)?, len)
     }
 
+    /// Read a little-endian pointer-sized word at a link-time vaddr.
     pub fn u64_va(&self, va: usize) -> Option<usize> {
         let b = self.read_va(va, 8)?;
         Some(u64::from_le_bytes(b.try_into().ok()?) as usize)
@@ -201,6 +211,8 @@ impl Module {
         ))
     }
 
+    /// True if this link-time vaddr lands in an executable segment. Used to
+    /// reject a resolved "function" that is really data.
     pub fn is_exec(&self, va: usize) -> bool {
         let va = va as u64;
         self.segs

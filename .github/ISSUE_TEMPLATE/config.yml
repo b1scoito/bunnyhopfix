@@ -1,0 +1,14 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: Counter-Strike:Source update broke it (start here)
+    url: https://github.com/b1scoito/bunnyhopfix#nothing-is-addressed-by-offset
+    about: >-
+      Every target is resolved at runtime and validated before it is written,
+      so a game update makes the tool refuse to patch and log FAILED/NOT rather
+      than corrupt the game. Read this, then open a bug report with those lines.
+  - name: bunnyhopfix 1.0 (the C++ implementation)
+    url: https://github.com/b1scoito/bunnyhopfix/releases/tag/1.0
+    about: >-
+      2.0.0 is a Rust rewrite and supersedes it. If you are running the old
+      bunnyhopfix.exe from the 1.0 release, please try 2.0.0 before reporting.

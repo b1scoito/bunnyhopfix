@@ -1,4 +1,5 @@
-//! Linux backend — Autobhop Prediction Enabler for Counter-Strike: Source.
+//! Linux backend — the bunnyhopfix jump-prediction patcher plus a launcher
+//! that starts CS:S with everything this tool needs already set up.
 //!
 //! Port of the idea from alkatrazbhop/BunnyhopAPE and rtldg/RawInput2BunnyhopAPE
 //! to Linux, in Rust.
@@ -42,7 +43,7 @@ use std::time::Duration;
 // CCSGameMovement[30] respectively.
 // ---------------------------------------------------------------------------
 
-use crate::sig::Sig;
+use bhopfix_core::sig::Sig;
 
 #[rustfmt::skip]
 static SIGS: &[Sig] = &[
@@ -110,10 +111,10 @@ fn find_game_pid() -> Option<u32> {
         if !name.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
-        if let Ok(comm) = fs::read_to_string(entry.path().join("comm")) {
-            if GAME_COMMS.contains(&comm.trim()) {
-                return name.parse().ok();
-            }
+        if let Ok(comm) = fs::read_to_string(entry.path().join("comm"))
+            && GAME_COMMS.contains(&comm.trim())
+        {
+            return name.parse().ok();
         }
     }
     None
@@ -156,10 +157,11 @@ fn find_game_pid_under(ancestor: u32) -> Option<u32> {
         let Ok(pid) = name.parse::<u32>() else {
             continue;
         };
-        if let Ok(comm) = fs::read_to_string(entry.path().join("comm")) {
-            if GAME_COMMS.contains(&comm.trim()) && is_descendant_of(pid, ancestor) {
-                return Some(pid);
-            }
+        if let Ok(comm) = fs::read_to_string(entry.path().join("comm"))
+            && GAME_COMMS.contains(&comm.trim())
+            && is_descendant_of(pid, ancestor)
+        {
+            return Some(pid);
         }
     }
     None
@@ -167,7 +169,7 @@ fn find_game_pid_under(ancestor: u32) -> Option<u32> {
 
 /// Executable span of client.so: (start, size). Returns the UNION of all
 /// r-xp client.so mappings, not just the first — inline patching elsewhere
-/// (e.g. librawinput2.so's viewpunch NOPs) mprotects sub-ranges, which splits
+/// (e.g. libbhopfix.so's viewpunch NOPs) mprotects sub-ranges, which splits
 /// the single r-xp VMA into several contiguous fragments. Taking only the
 /// first fragment would miss CheckJumpButton if it lands past the first split.
 fn client_so_region(pid: u32) -> Option<(u64, u64)> {
@@ -378,10 +380,10 @@ fn scroll_lock_on() -> bool {
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if name.to_string_lossy().ends_with("::scrolllock") {
-            if let Ok(v) = fs::read_to_string(entry.path().join("brightness")) {
-                return v.trim() != "0";
-            }
+        if name.to_string_lossy().ends_with("::scrolllock")
+            && let Ok(v) = fs::read_to_string(entry.path().join("brightness"))
+        {
+            return v.trim() != "0";
         }
     }
     false
@@ -471,12 +473,12 @@ fn save_display_modes() -> Vec<(String, String, String)> {
             current_output = line.split_whitespace().next().map(str::to_string);
         } else if let (Some(output), true) = (&current_output, line.starts_with(' ')) {
             let mut parts = line.split_whitespace();
-            if let Some(mode) = parts.next() {
-                // the current rate is the token carrying '*', wherever it is
-                if let Some(rate) = parts.find(|r| r.contains('*')) {
-                    let rate = rate.trim_end_matches(['*', '+']).to_string();
-                    out.push((output.clone(), mode.to_string(), rate));
-                }
+            // the current rate is the token carrying '*', wherever it is
+            if let Some(mode) = parts.next()
+                && let Some(rate) = parts.find(|r| r.contains('*'))
+            {
+                let rate = rate.trim_end_matches(['*', '+']).to_string();
+                out.push((output.clone(), mode.to_string(), rate));
             }
         }
     }
@@ -531,17 +533,17 @@ fn primary_resolution() -> Option<(u32, u32)> {
     let s = String::from_utf8_lossy(&out.stdout);
     for line in s.lines() {
         // e.g. "DP-4 connected primary 1920x1080+0+500 (normal ...) ..."
-        if line.contains(" connected") && line.contains(" primary ") {
-            if let Some(geo) = line
+        if line.contains(" connected")
+            && line.contains(" primary ")
+            && let Some(geo) = line
                 .split_whitespace()
                 .find(|t| t.contains('x') && t.contains('+'))
+        {
+            let dims = geo.split('+').next()?;
+            if let Some((w, h)) = dims.split_once('x')
+                && let (Ok(w), Ok(h)) = (w.parse(), h.parse())
             {
-                let dims = geo.split('+').next()?;
-                if let Some((w, h)) = dims.split_once('x') {
-                    if let (Ok(w), Ok(h)) = (w.parse(), h.parse()) {
-                        return Some((w, h));
-                    }
-                }
+                return Some((w, h));
             }
         }
     }
@@ -561,9 +563,9 @@ fn launch_css(css_dir: &Path, extra_args: &[String]) -> std::io::Result<Child> {
     // under a compositor with unredirect-if-possible (or a bare WM) the
     // full-screen borderless window is presented directly, so input latency
     // matches exclusive fullscreen. Force exclusive fullscreen with
-    // BHOP_FULLSCREEN=1 (then -freq keeps the display off 60Hz; CSS_FREQ
+    // BHOPFIX_FULLSCREEN=1 (then -freq keeps the display off 60Hz; CSS_FREQ
     // overrides the rate, CSS_FREQ=off drops -freq).
-    if std::env::var_os("BHOP_FULLSCREEN").is_some() {
+    if std::env::var_os("BHOPFIX_FULLSCREEN").is_some() {
         match std::env::var("CSS_FREQ").as_deref() {
             Ok("off") => {}
             Ok(rate) => {
@@ -584,22 +586,26 @@ fn launch_css(css_dir: &Path, extra_args: &[String]) -> std::io::Result<Child> {
                 default_args.push(w.to_string());
                 default_args.push("-h".into());
                 default_args.push(h.to_string());
-                println!("[*] display: borderless windowed {w}x{h} (BHOP_FULLSCREEN=1 for exclusive fullscreen)");
+                println!(
+                    "[*] display: borderless windowed {w}x{h} (BHOPFIX_FULLSCREEN=1 for exclusive fullscreen)"
+                );
             }
             None => {
-                println!("[*] display: borderless windowed (resolution auto-detect failed; BHOP_FULLSCREEN=1 for exclusive)");
+                println!(
+                    "[*] display: borderless windowed (resolution auto-detect failed; BHOPFIX_FULLSCREEN=1 for exclusive)"
+                );
             }
         }
     }
 
-    // Force m_rawinput 2 at launch. The whole point of librawinput2.so is the
+    // Force m_rawinput 2 at launch. The whole point of libbhopfix.so is the
     // tick-aligned mode-2 sampler, but config.cfg ships "m_rawinput 1" (plus
     // m_rawinput_onetime_reset) which overrides autoexec.cfg depending on load
     // order — so setting it in autoexec is unreliable. A command-line
     // "+m_rawinput 2" is applied AFTER all configs load and reliably wins; the
     // user can still change it in-game or override it via `-- +m_rawinput N`.
-    // Opt out with RAWINPUT2_NO_FORCE=1.
-    if std::env::var_os("RAWINPUT2_NO_FORCE").is_none() {
+    // Opt out with BHOPFIX_NO_FORCE=1.
+    if std::env::var_os("BHOPFIX_NO_FORCE").is_none() {
         default_args.push("+m_rawinput".into());
         default_args.push("2".into());
     }
@@ -609,20 +615,18 @@ fn launch_css(css_dir: &Path, extra_args: &[String]) -> std::io::Result<Child> {
         .args(&default_args)
         .args(extra_args);
 
-    // Inject rawinput2.so (m_rawinput 2 hooks) if it sits next to this binary,
+    // Inject libbhopfix.so (m_rawinput 2 hooks) if it sits next to this binary,
     // filtering the Steam overlay out of any inherited LD_PRELOAD (see below).
     let mut preload_parts: Vec<String> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let lib = dir.join("librawinput2.so");
-            if lib.exists() {
-                preload_parts.push(lib.to_string_lossy().into_owned());
-                println!("[*] injecting librawinput2.so (m_rawinput 2 hooks)");
-            } else {
-                println!(
-                    "[*] librawinput2.so not found next to binary; skipping m_rawinput 2 hooks"
-                );
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let lib = dir.join("libbhopfix.so");
+        if lib.exists() {
+            preload_parts.push(lib.to_string_lossy().into_owned());
+            println!("[*] injecting libbhopfix.so (m_rawinput 2 hooks)");
+        } else {
+            println!("[*] libbhopfix.so not found next to binary; skipping m_rawinput 2 hooks");
         }
     }
     harden_launch_env(&mut cmd, &mut preload_parts);
@@ -643,8 +647,8 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
     //    chain: it causes an input-triggered frametime-sawtooth "timebomb"
     //    after ~25-40 min even when the overlay is disabled in the UI
     //    (steam-for-linux#11446). We inherit LD_PRELOAD but drop that one lib.
-    //    Opt out with BHOP_KEEP_OVERLAY=1.
-    if std::env::var_os("BHOP_KEEP_OVERLAY").is_none() {
+    //    Opt out with BHOPFIX_KEEP_OVERLAY=1.
+    if std::env::var_os("BHOPFIX_KEEP_OVERLAY").is_none() {
         if let Ok(existing) = std::env::var("LD_PRELOAD") {
             let mut dropped = false;
             // glibc treats space/tab AND colon as LD_PRELOAD separators.
@@ -654,8 +658,7 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
                 // never dropped by mistake).
                 if Path::new(part)
                     .file_name()
-                    .map(|f| f == "gameoverlayrenderer.so")
-                    == Some(true)
+                    .is_some_and(|f| f == "gameoverlayrenderer.so")
                 {
                     dropped = true;
                 } else {
@@ -663,7 +666,9 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
                 }
             }
             if dropped {
-                println!("[*] hardening: excluded gameoverlayrenderer.so from LD_PRELOAD (#11446 stutter guard)");
+                println!(
+                    "[*] hardening: excluded gameoverlayrenderer.so from LD_PRELOAD (#11446 stutter guard)"
+                );
             }
         }
     } else if let Ok(existing) = std::env::var("LD_PRELOAD") {
@@ -692,8 +697,8 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
     //    CS:S 64-bit renders via vendored dxvk-native (confirmed: the game's
     //    d3d9 log reports "Found config env: d3d9.maxFrameLatency = 1"), which
     //    reads DXVK_CONFIG. Merged into any DXVK_CONFIG the user set. Opt out
-    //    with BHOP_NO_DXVK_TWEAKS=1.
-    if std::env::var_os("BHOP_NO_DXVK_TWEAKS").is_none()
+    //    with BHOPFIX_NO_DXVK_TWEAKS=1.
+    if std::env::var_os("BHOPFIX_NO_DXVK_TWEAKS").is_none()
         && std::env::var_os("DXVK_CONFIG_FILE").is_none()
     {
         let base = std::env::var("DXVK_CONFIG").unwrap_or_default();
@@ -716,8 +721,8 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
     //    pipewire-pulse) box would mean total silence. The pipewire-pulse
     //    shim exposes the same socket, which is what we probe for. This dodges
     //    the SDL PipeWire-backend stutter/echo regression (#8013). Opt out
-    //    with BHOP_NO_SDL_AUDIO=1.
-    if std::env::var_os("BHOP_NO_SDL_AUDIO").is_none()
+    //    with BHOPFIX_NO_SDL_AUDIO=1.
+    if std::env::var_os("BHOPFIX_NO_SDL_AUDIO").is_none()
         && std::env::var_os("SDL_AUDIODRIVER").is_none()
         && std::env::var_os("SDL_AUDIO_DRIVER").is_none()
     {
@@ -744,21 +749,52 @@ fn pulse_socket_present() -> bool {
 // main
 // ---------------------------------------------------------------------------
 
+/// One line naming the build, so a bug report identifies exactly what ran.
+pub fn version_line() -> String {
+    format!(
+        "bunnyhopfix {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    )
+}
+
 fn print_usage() {
     eprintln!(
-        "bunnyhop-ape — Autobhop Prediction Enabler for CS:S (Linux)\n\
+        "{} — CS:S bhop delay (jump prediction) fixer (Linux)\n\
          \n\
          USAGE:\n\
-         \x20 bunnyhop-ape [-- extra game args]   launch CS:S with -insecure and patch it\n\
-         \x20 bunnyhop-ape --attach [pid]         patch a running game (auto-finds pid; needs sudo)\n\
-         \x20 bunnyhop-ape --scan-file <path>     offline: verify signatures against client.so\n\
-         \x20 bunnyhop-ape --fix-maps [game-root] extract uppercase-packed pak content of all maps\n\
-         \x20                                             as lowercase loose files (Linux pink-texture fix)\n\
+         \x20 bunnyhopfix [-- extra game args]   launch CS:S with -insecure and patch it\n\
+         \x20 bunnyhopfix --attach [pid]         patch a running game (auto-finds pid; needs sudo)\n\
+         \x20 bunnyhopfix --scan-file <path>     offline: verify signatures against client.so\n\
+         \x20 bunnyhopfix --fix-maps [game-root] extract uppercase-packed pak content of all maps\n\
+         \x20                                           as lowercase loose files (Linux pink-texture fix)\n\
+         \n\
+         \x20 --scroll-lock                      also toggle prediction from the Scroll Lock LED\n\
+         \x20 --version, --help                  print the version / this text\n\
          \n\
          Toggle prediction at runtime with Scroll Lock or: kill -USR1 <pid of this tool>\n\
          \n\
+         ENVIRONMENT (launcher):\n\
+         \x20 BHOPFIX_FULLSCREEN=1       exclusive fullscreen instead of borderless windowed\n\
+         \x20 CSS_FREQ=<hz|off>          -freq for exclusive fullscreen (default 144)\n\
+         \x20 BHOPFIX_NO_FORCE=1         do not force `+m_rawinput 2` on the command line\n\
+         \x20 BHOPFIX_KEEP_OVERLAY=1     keep gameoverlayrenderer.so in LD_PRELOAD\n\
+         \x20 BHOPFIX_NO_DXVK_TWEAKS=1   do not set DXVK_CONFIG d3d9.maxFrameLatency = 1\n\
+         \x20 BHOPFIX_NO_SDL_AUDIO=1     do not pin SDL_AUDIODRIVER to pulseaudio\n\
+         \n\
+         ENVIRONMENT (libbhopfix.so, injected at launch when it sits next to this binary):\n\
+         \x20 BHOPFIX_DEBUG=1            input/hook instrumentation in the log\n\
+         \x20 BHOPFIX_DEMOS=1            auto-record a demo per map\n\
+         \x20 BHOPFIX_KEEP_VIEWPUNCH=1   keep the landing viewpunch\n\
+         \x20 BHOPFIX_NO_SOURCEJUMP=1    do not look up the SourceJump WR for the map\n\
+         \n\
          WARNING: only use with -insecure. Patching memory on VAC-secured\n\
-         servers is your own risk."
+         servers is your own risk.",
+        version_line()
     );
 }
 
@@ -770,6 +806,10 @@ pub fn main() {
     // the game with these extra args".)
     if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
         print_usage();
+        return;
+    }
+    if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
+        println!("{}", version_line());
         return;
     }
 
@@ -822,7 +862,7 @@ pub fn main() {
             std::process::exit(1);
         }
         println!("[*] CS:S found at {}", css_dir.display());
-        let n = crate::pakfix::sweep(&css_dir);
+        let n = bhopfix_core::pakfix::sweep(&css_dir);
         println!(
             "[*] case-fix sweep done: {n} file(s) extracted to cstrike/download\n\
              [*] (a running game picks them up on the next map load — `retry` in console)"
@@ -874,13 +914,13 @@ pub fn main() {
         println!("[*] CS:S found at {}", css_dir.display());
         // Linux case-folding fix (Source-1-Games#6868) for maps already on
         // disk, before the game boots; newly downloaded maps are handled at
-        // runtime by librawinput2.so.
-        let fixed = crate::pakfix::sweep(&css_dir);
+        // runtime by libbhopfix.so.
+        let fixed = bhopfix_core::pakfix::sweep(&css_dir);
         if fixed > 0 {
             println!("[*] case-fix: extracted {fixed} uppercase-packed file(s) from map pakfiles");
         }
         println!("[*] launching CS:S with -insecure -novid ...");
-        println!("[*] tip: run this tool via `gamemoderun bunnyhop-ape` to keep gamemode");
+        println!("[*] tip: run this tool via `gamemoderun bunnyhopfix` to keep gamemode");
         saved_modes = save_display_modes();
         match launch_css(&css_dir, &extra) {
             Ok(c) => {
@@ -896,29 +936,29 @@ pub fn main() {
 
     // --- wait for client.so --------------------------------------------------
     println!("[*] waiting for the game process + client.so to load...");
-    let patcher = loop {
+    let mut patcher = loop {
         if GOT_TERM.load(Ordering::SeqCst) {
             return;
         }
-        if let Some(c) = child.as_mut() {
-            if let Ok(Some(status)) = c.try_wait() {
-                println!("[*] launcher exited before the game loaded ({status})");
-                return;
-            }
+        if let Some(c) = child.as_mut()
+            && let Ok(Some(status)) = c.try_wait()
+        {
+            println!("[*] launcher exited before the game loaded ({status})");
+            return;
         }
         // Launch mode: resolve the real game process (a cstrike_linux64
         // descendant of our cstrike.sh child), since child.id() is the shell.
-        if pid == 0 {
-            if let Some(wp) = wrapper_pid {
-                match find_game_pid_under(wp) {
-                    Some(gp) => {
-                        pid = gp;
-                        println!("[*] game process is pid {pid}");
-                    }
-                    None => {
-                        thread::sleep(Duration::from_millis(250));
-                        continue;
-                    }
+        if pid == 0
+            && let Some(wp) = wrapper_pid
+        {
+            match find_game_pid_under(wp) {
+                Some(gp) => {
+                    pid = gp;
+                    println!("[*] game process is pid {pid}");
+                }
+                None => {
+                    thread::sleep(Duration::from_millis(250));
+                    continue;
                 }
             }
         }
@@ -936,7 +976,6 @@ pub fn main() {
             thread::sleep(Duration::from_millis(250));
         }
     };
-    let mut patcher = patcher;
 
     println!("[*] found {} patch site(s)", patcher.sites.len());
     patcher.enable();
@@ -949,7 +988,7 @@ pub fn main() {
     // the whole output and the compositor presents it directly (no added
     // latency). Launch + borderless mode only; attach leaves the user's setup
     // alone.
-    if child.is_some() && std::env::var_os("BHOP_FULLSCREEN").is_none() && running_i3() {
+    if child.is_some() && std::env::var_os("BHOPFIX_FULLSCREEN").is_none() && running_i3() {
         i3_fullscreen_game_window();
     }
 

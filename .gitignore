@@ -2,18 +2,23 @@
 # Cargo.lock IS committed on purpose: this repo ships release binaries, so the
 # exact dependency set that produced them has to be reproducible.
 /target
+**/*.rs.bk
 
 # Editor / OS noise
 .vscode/
 .idea/
+.zed/
+.fleet/
+.helix/
 *.swp
 *.swo
+*~
 .DS_Store
 
 # Runtime droppings. The tool logs to the terminal, but developing against a
 # live game leaves these in the repo root or in the game dir when the game (or
 # the tool) is launched from here: engine logs, auto-recorded POV demos
-# (RAWINPUT2_DEMOS=1), and core/minidumps from a crashed client.
+# (BHOPFIX_DEMOS=1), and core/minidumps from a crashed client.
 *.log
 *.dem
 core

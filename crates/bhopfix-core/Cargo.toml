@@ -1,0 +1,14 @@
+[package]
+name = "bhopfix-core"
+description = "Shared pattern matching, ELF/RTTI reading and BSP pakfile repair for bunnyhopfix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "bhopfix_core"
+
+[lints]
+workspace = true

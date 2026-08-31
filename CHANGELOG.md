@@ -7,11 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-31
+
+**bunnyhopfix 2.0.0 is a full Rust rewrite of the C++ `bunnyhopfix`, and
+supersedes it.** The 1.0 TODO list was exactly *"Linux support"* and *"Code
+organization"*; this release is both. 1.0 remains available as history, but it
+is no longer the implementation this project maintains.
+
+### Changed
+
+- **BREAKING — everything is named `bunnyhopfix` now.** The Rust prototype that
+  became this release shipped under the working names `bunnyhop-ape-linux` /
+  `bunnyhop-ape` with a `rawinput2`-prefixed environment; every one of those
+  names is gone, with no compatibility aliases:
+
+  | was | is |
+  |---|---|
+  | binary `bunnyhop-ape` | `bunnyhopfix` (`bunnyhopfix.exe` on Windows) |
+  | `librawinput2.so` | `libbhopfix.so` |
+  | log prefix `[rawinput2] ` | `[bhopfix] ` |
+  | `RAWINPUT2_DEBUG` | `BHOPFIX_DEBUG` |
+  | `RAWINPUT2_NO_FORCE` | `BHOPFIX_NO_FORCE` |
+  | `RAWINPUT2_DEMOS` | `BHOPFIX_DEMOS` |
+  | `RAWINPUT2_KEEP_VIEWPUNCH` | `BHOPFIX_KEEP_VIEWPUNCH` |
+  | `RAWINPUT2_NO_SOURCEJUMP` | `BHOPFIX_NO_SOURCEJUMP` |
+  | `BHOP_FULLSCREEN` | `BHOPFIX_FULLSCREEN` |
+  | `BHOP_KEEP_OVERLAY` | `BHOPFIX_KEEP_OVERLAY` |
+  | `BHOP_NO_DXVK_TWEAKS` | `BHOPFIX_NO_DXVK_TWEAKS` |
+  | `BHOP_NO_SDL_AUDIO` | `BHOPFIX_NO_SDL_AUDIO` |
+  | `~/.cache/bunnyhop-ape-linux/` | `~/.cache/bunnyhopfix/` |
+
+  Scripts, `.desktop` entries and shell aliases that set the old variables will
+  silently stop having any effect — the old names are not read at all. The
+  game's own `m_rawinput` ConVar is untouched, and "rawinput2" still names the
+  *feature* ported from RawInput2BunnyhopAPE.
+- **Code organization: one crate became a three-crate workspace.** This is the
+  second half of the C++ TODO. `bhopfix-core` holds the pattern engine, the
+  ELF/RTTI/GOT reader and the BSP pakfile repair, and contains no writes into
+  another process — it only finds and validates. `bhopfix-hook` builds the
+  injected `libbhopfix.so` and is `#![cfg(unix)]`. `bunnyhopfix` builds the
+  launcher/patcher binary for both platforms. The patcher and the hook stopped
+  being two halves of one 2000-line file that happened to share a `mod`.
+- **Edition 2024, MSRV 1.88, `unsafe_op_in_unsafe_fn` denied workspace-wide.**
+  An `unsafe fn` no longer hands its whole body a blanket permission: each
+  hazardous operation is wrapped where it happens, which in a tool that writes
+  into a live game's address space is the difference between an audit that
+  means something and one that does not. `clippy::all` is denied and
+  `missing_docs` warns; the blanket `#![allow(unused_unsafe)]` the old crate
+  root carried is deleted, because the edition change removed its reason to
+  exist.
+- **The Windows backend now uses upstream bunnyhopfix's production
+  signature** — `85 C0 8B 46 08 0F 84 ?? FF FF FF F6 40 28 02 0F 85 ?? FF FF FF`,
+  NOPing the 6-byte `jne` at `+15` — the exact pattern shipped in the C++ 1.0
+  release, replacing the derived-from-source guess the prototype carried. What
+  this repository's automation still cannot prove is that a live Windows CS:S
+  matches it: CI compiles, links and cross-links the binary, but a GitHub
+  runner cannot run the game. On a no-match it patches nothing and says so.
+- The Windows backend **enforces `-insecure`** like every other component,
+  reading the target's command line out of its WOW64 PEB (`client.dll` is
+  32-bit, so the game is a WOW64 process) and refusing to patch a VAC-secured
+  client.
+
+### Added
+
+- **CI on every push and pull request** (`ci.yml`): `cargo fmt --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, a native Linux release build that asserts both
+  `target/release/bunnyhopfix` and `target/release/libbhopfix.so` exist, a
+  native Windows build of the bin, the `cargo-zigbuild` cross-compile that
+  maintainers use locally, and a `cargo check` pinned to 1.88 so the declared
+  MSRV stays true.
+- **Tagged releases are built and published automatically** (`release.yml`)
+  from a `v*` tag: a Linux tarball, a Windows zip, the bare `bunnyhopfix.exe`
+  under the same asset name the C++ 1.0 release used, and a `SHA256SUMS.txt`
+  over all of them. The release body is the matching section of this file.
+  Every Windows build — CI, release and nightly — links the CRT statically
+  (`-C target-feature=+crt-static`), so `bunnyhopfix.exe` runs without a VC++
+  redistributable, exactly like the single-file 1.0 asset.
+- **A weekly schedule** (`schedule.yml`, Mondays 05:00 UTC): a toolchain canary
+  across `stable`/`beta`/`nightly` rustc that files or updates one
+  `Weekly canary failed` issue instead of spamming, and a `nightly` rolling
+  prerelease that rebuilds from `main` only when `main` has actually moved.
+- Dependabot for `cargo` and `github-actions`, grouped so the tree's single
+  dependency cannot generate weekly noise.
+- `--version` / `-V` on both backends, printing the crate version and whether
+  the build is a debug or release one, so a bug report identifies exactly what
+  ran. The release workflow refuses to publish a tag that disagrees with the
+  workspace version, so that string is always the version people downloaded.
+
 ## [0.2.0] - 2026-08-31
 
-First release of the project under its cross-platform name `bunnyhop-ape`
-(previously `bunnyhop-ape-linux`), and the release that removes every
-hard-coded game address from the tool.
+Pre-release development history of this rewrite: the Rust tool as it existed
+before it took the `bunnyhopfix` name, when it was still `bunnyhop-ape` /
+`bunnyhop-ape-linux`. Never published as a release; kept here because it is
+where every hard-coded game address was removed, which is the reason 2.0.0
+survives game updates at all. **The names below are historical** — see the
+rename table in 2.0.0 for what they are called today.
 
 ### Added
 

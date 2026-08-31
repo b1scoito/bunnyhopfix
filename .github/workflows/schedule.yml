@@ -1,0 +1,212 @@
+name: Weekly
+
+# The release cadence for a tool that patches a game nobody controls:
+#   * tagged releases are cut by hand (`git tag v2.0.1 && git push --tags`),
+#   * `nightly` refreshes from `main` every Monday when there are new commits,
+#   * the canary reports toolchain rot even in a week with no commits at all.
+on:
+  schedule:
+    - cron: '0 5 * * 1'   # Mondays, 05:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  canary:
+    name: canary (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, beta, nightly]
+    # Nightly rustc invents lints faster than anyone can fix them; it is a
+    # weather report, not a gate. stable and beta really do fail the run.
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # `@v1` (not a branch) because the toolchain comes from the matrix and
+      # `uses:` cannot be interpolated.
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: canary-${{ matrix.toolchain }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+  report:
+    name: report canary failure
+    needs: canary
+    # Only the scheduled run files issues: a manual dispatch is someone already
+    # watching the log.
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      # Open-or-update exactly one tracking issue, so 52 quiet weeks of
+      # breakage produce one thread instead of 52.
+      - name: File or update the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE='Weekly canary failed'
+          # Written to a file so the shell indentation in this step never ends
+          # up as a markdown code block in the issue.
+          cat > body.md <<EOF
+          The weekly toolchain canary failed on \`${GITHUB_SHA}\`.
+
+          Run: ${RUN_URL}
+
+          A \`stable\` or \`beta\` failure means the toolchain moved under us (a
+          new lint, a behaviour change) — fix it before it reaches a user. A
+          \`nightly\`-only failure is \`continue-on-error\` and does not fail
+          this workflow; it only shows up here if something else failed too.
+          EOF
+          # A fresh fork has no `ci` label and `gh issue create --label` errors
+          # out on a missing one.
+          gh label create ci --color 0e8a16 --description 'continuous integration' \
+            --force >/dev/null
+          NUM=$(gh issue list --state open --label ci --search "\"$TITLE\" in:title" \
+                  --json number,title \
+                  --jq "[.[] | select(.title == \"$TITLE\")] | .[0].number // empty")
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --body-file body.md
+          else
+            gh issue create --title "$TITLE" --label ci --body-file body.md
+          fi
+
+  nightly-build:
+    name: nightly rolling build
+    # Never publish a rolling build from a tree that stable or beta rejects.
+    # A nightly-rustc-only failure is `continue-on-error` above, so it counts
+    # as success here and does not block the build.
+    needs: canary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # Skip cleanly in a quiet week: republishing an identical build only
+      # churns the release page and everyone's update checks.
+      - name: New commits since the last nightly?
+        id: chk
+        run: |
+          git fetch --tags --force
+          HEAD_SHA=$(git rev-parse HEAD)
+          OLD_SHA=$(git rev-parse -q --verify 'refs/tags/nightly^{commit}' || true)
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$HEAD_SHA" = "$OLD_SHA" ]; then
+            echo "nightly is already at $HEAD_SHA; nothing to build"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.chk.outputs.changed == 'true'
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.chk.outputs.changed == 'true'
+
+      - uses: mlugg/setup-zig@v2
+        if: steps.chk.outputs.changed == 'true'
+        with:
+          version: 0.16.0
+
+      - uses: taiki-e/install-action@v2
+        if: steps.chk.outputs.changed == 'true'
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build linux
+        if: steps.chk.outputs.changed == 'true'
+        run: cargo build --workspace --release
+
+      # Statically link the CRT so the shipped `bunnyhopfix.exe` is a true
+      # drop-and-run download with no VC++ redistributable dependency — the
+      # single-file asset users know from the C++ 1.0 release, and the same
+      # flag ci.yml and release.yml build their Windows assets with.
+      # On this `-gnu`/zig path mingw already imports the OS UCRT rather than
+      # VCRUNTIME140, so the flag changes nothing here; it is kept so the three
+      # Windows builds cannot silently drift apart. Do not remove.
+      #
+      # Step-scoped on purpose: this job also builds Linux natively above, and
+      # `libbhopfix.so` is an LD_PRELOAD cdylib that must keep linking the
+      # system glibc dynamically.
+      - name: Cross-build windows
+        if: steps.chk.outputs.changed == 'true'
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+
+      - name: Package
+        if: steps.chk.outputs.changed == 'true'
+        run: |
+          test -x target/release/bunnyhopfix
+          test -f target/release/libbhopfix.so
+          test -f target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe
+          mkdir -p dist
+          tar -czf dist/bunnyhopfix-nightly-x86_64-linux.tar.gz \
+            --transform 's,^target/release/,,' \
+            target/release/bunnyhopfix \
+            target/release/libbhopfix.so \
+            README.md \
+            LICENSE \
+            verify-live.sh
+          cp target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe dist/bunnyhopfix.exe
+          zip -qj dist/bunnyhopfix-nightly-x86_64-windows.zip \
+            target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe README.md LICENSE
+          (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Move the nightly tag
+        if: steps.chk.outputs.changed == 'true'
+        run: |
+          git tag -f nightly "${{ steps.chk.outputs.sha }}"
+          git push -f origin refs/tags/nightly
+
+      - name: Refresh the nightly prerelease
+        if: steps.chk.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: nightly
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            Rolling build of `main` at
+            [`${{ steps.chk.outputs.short }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.chk.outputs.sha }}),
+            rebuilt automatically every Monday when `main` has moved.
+
+            **This is not a tested release.** It has passed CI and nothing else:
+            no live game verified it. For a build that a human ran against a real
+            Counter-Strike: Source, use the newest `v*` release.
+
+            Assets are replaced in place, so the download links stay stable and
+            always point at the newest rolling build.
+          files: |
+            dist/bunnyhopfix-nightly-x86_64-linux.tar.gz
+            dist/bunnyhopfix-nightly-x86_64-windows.zip
+            dist/bunnyhopfix.exe
+            dist/SHA256SUMS.txt

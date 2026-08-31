@@ -5,16 +5,67 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and publish (e.g. v2.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  meta:
+    name: resolve tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      prerelease: ${{ steps.t.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # One place decides the tag, so the tarball name, the zip name, the
+      # checksum file and the release title can never disagree.
+      - id: t
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            *-rc*|*-beta*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)             echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      # A tag that disagrees with the manifest ships a binary whose version is
+      # not the version anyone downloaded. Fail here, before anything is built.
+      - name: Tag matches the workspace version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          VER=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ -z "$VER" ]; then
+            echo "::error::no version found in [workspace.package] of Cargo.toml"
+            exit 1
+          fi
+          if [ "$VER" != "${TAG#v}" ]; then
+            echo "::error::tag $TAG does not match workspace version $VER"
+            exit 1
+          fi
+          echo "tag $TAG matches workspace version $VER"
+
   linux:
     name: build linux tarball
+    needs: meta
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -22,65 +73,128 @@ jobs:
 
       # Full release build: the patcher bin plus the LD_PRELOAD cdylib.
       - name: Build
-        run: cargo build --release
+        run: cargo build --workspace --release
 
       - name: Package
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
         run: |
-          tar -czf "bunnyhop-ape-${{ github.ref_name }}-x86_64-linux.tar.gz" \
+          test -x target/release/bunnyhopfix
+          test -f target/release/libbhopfix.so
+          tar -czf "bunnyhopfix-${TAG}-x86_64-linux.tar.gz" \
             --transform 's,^target/release/,,' \
-            target/release/bunnyhop-ape \
-            target/release/librawinput2.so \
+            target/release/bunnyhopfix \
+            target/release/libbhopfix.so \
             README.md \
             LICENSE \
             verify-live.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bunnyhop-ape-linux
-          path: bunnyhop-ape-${{ github.ref_name }}-x86_64-linux.tar.gz
+          name: release-linux
+          path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
           if-no-files-found: error
 
   windows:
     name: build windows zip
+    needs: meta
     runs-on: windows-latest
+    # Statically link the CRT so the shipped `bunnyhopfix.exe` is a true
+    # drop-and-run download with no VC++ redistributable dependency — the
+    # single-file asset users know from the C++ 1.0 release. The tool has no C
+    # dependencies, so this costs nothing. Kept identical to ci.yml's
+    # `build-windows`, which exists to catch a break in this exact build.
+    # Do not remove.
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      # Windows ships the prediction patcher only; the `rawinput2` cdylib is an
-      # LD_PRELOAD library and therefore Linux-only.
+      # Windows ships the prediction patcher only; the hook crate is an
+      # LD_PRELOAD cdylib and therefore Linux-only (`#![cfg(unix)]`).
       - name: Build
-        run: cargo build --release --bin bunnyhop-ape
+        run: cargo build -p bunnyhopfix --release
 
       - name: Package
         shell: pwsh
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
         run: |
-          Compress-Archive -Path target/release/bunnyhop-ape.exe, README.md, LICENSE -DestinationPath "bunnyhop-ape-${{ github.ref_name }}-x86_64-windows.zip"
+          if (-not (Test-Path target/release/bunnyhopfix.exe)) { throw "missing bunnyhopfix.exe" }
+          Compress-Archive -Path target/release/bunnyhopfix.exe, README.md, LICENSE `
+            -DestinationPath "bunnyhopfix-$env:TAG-x86_64-windows.zip"
+          # Also shipped bare: `bunnyhopfix.exe` is the asset name the C++ 1.0
+          # release used, so long-time users find what they expect.
+          Copy-Item target/release/bunnyhopfix.exe bunnyhopfix.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bunnyhop-ape-windows
-          path: bunnyhop-ape-${{ github.ref_name }}-x86_64-windows.zip
+          name: release-windows
+          path: |
+            bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
+            bunnyhopfix.exe
           if-no-files-found: error
 
   publish:
     name: publish release
+    needs: [meta, linux, windows]
     runs-on: ubuntu-latest
-    needs: [linux, windows]
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: bunnyhop-ape-*
+          pattern: release-*
+          path: dist
           merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Pull this version's section out of CHANGELOG.md: everything between
+      # `## [x.y.z]` and the next `## [` heading. If the section is missing we
+      # leave the body empty and let GitHub auto-generate the notes instead.
+      - name: Release notes
+        id: notes
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          VER="${TAG#v}"
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { inside = 1; next }
+            inside && /^## \[/       { exit }
+            inside                   { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ -s notes.md ]; then
+            echo "generate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "no [$VER] section in CHANGELOG.md; falling back to generated notes"
+            echo "generate=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
+          body_path: notes.md
+          generate_release_notes: ${{ steps.notes.outputs.generate }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          fail_on_unmatched_files: true
           files: |
-            bunnyhop-ape-${{ github.ref_name }}-x86_64-linux.tar.gz
-            bunnyhop-ape-${{ github.ref_name }}-x86_64-windows.zip
+            dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
+            dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
+            dist/bunnyhopfix.exe
+            dist/SHA256SUMS.txt

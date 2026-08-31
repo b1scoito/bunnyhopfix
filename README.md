@@ -1,48 +1,82 @@
-# bunnyhop-ape
+# bunnyhopfix
 
-**Autobhop Prediction Enabler + RawInput2 for Counter-Strike: Source**, written
-in Rust. Full-featured on Linux; barebones prediction patcher on Windows.
+**Bhop delay fixer for Counter-Strike: Source** — enables client-side jump
+prediction on autobhop servers, so the jump happens when you press it instead
+of one server round-trip later.
 
-A port of [alkatrazbhop/BunnyhopAPE](https://github.com/alkatrazbhop/BunnyhopAPE)
-and [rtldg/RawInput2BunnyhopAPE](https://github.com/rtldg/RawInput2BunnyhopAPE)
-(both Windows-only) to Linux, plus a Windows patcher of our own.
+**2.0.0 is a full Rust rewrite of the C++ `bunnyhopfix`.** The 1.0 TODO list
+was exactly two items — *Linux support* and *code organization* — and this
+release is both: a native Linux backend (the original was Windows-only), a
+Windows backend that keeps 1.0's production signature, and a three-crate
+workspace instead of one translation unit. It supersedes the C++
+implementation; 1.0 is kept only as history.
+
+Lineage: the prediction patch is the technique from
+[alkatrazbhop/BunnyhopAPE](https://github.com/alkatrazbhop/BunnyhopAPE), which
+b1scoito's C++ [bunnyhopfix](https://github.com/b1scoito/bunnyhopfix) packaged
+as a standalone Windows patcher. The Linux build additionally ports
+[rtldg/RawInput2BunnyhopAPE](https://github.com/rtldg/RawInput2BunnyhopAPE)
+(rawinput2, fastdl map hijack, viewpunch remover) and adds a handful of
+Linux-only fixes of our own.
 
 | artifact | what it is |
 |---|---|
-| `bunnyhop-ape` | launcher/patcher: autobhop jump-prediction patch (BunnyhopAPE half) |
-| `librawinput2.so` | LD_PRELOAD hook library, Linux only: momentum-style `m_rawinput 2` (RawInput2 half) **+ fastdl.me map hijack** |
+| `bunnyhopfix` | launcher/patcher: the autobhop jump-prediction patch |
+| `libbhopfix.so` | LD_PRELOAD hook library, Linux only: momentum-style `m_rawinput 2` **+ fastdl.me map hijack + viewpunch remover + engine console glue** |
+| `bunnyhopfix.exe` | Windows build of the patcher (prediction patch only) |
 
 ## Platform support
 
 | | Linux | Windows |
 |---|---|---|
-| autobhop prediction patch | ✅ verified on build 10897846 | ⚠️ builds, signature unverified |
+| autobhop prediction patch | ✅ verified on build 10897846 | ✅ upstream 1.0's production signature |
 | `m_rawinput 2`, viewpunch, fastdl, console glue | ✅ | ❌ (LD_PRELOAD/ELF/procfs only) |
 | launches the game for you | ✅ | ❌ start CS:S yourself, then attach |
 
-The Windows port is deliberately barebones: it finds `client.dll` in a running
+The Windows port is deliberately narrow: it finds `client.dll` in a running
 game, patches `CheckJumpButton`, offers the same Scroll Lock toggle, and
-restores the bytes on exit. Its signature comes from upstream's public source,
-which targets the 32-bit `client.dll`, and **has not been run against a real
-Windows install** — it is validated only by compiling, linking and CI. If it
-does not match your `client.dll` it patches nothing and tells you so; it will
-never write to a location it did not verify. Patches welcome from anyone who
-can test it.
+restores the bytes on exit. Its signature is not a guess — it is the C++
+bunnyhopfix's own shipped pattern,
 
-Development builds the Windows binary from Linux with
-[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
-
-```sh
-rustup target add x86_64-pc-windows-gnu
-cargo zigbuild --release --bin bunnyhop-ape --target x86_64-pc-windows-gnu
 ```
+85 C0 8B 46 08 0F 84 ?? FF FF FF F6 40 28 02 0F 85 ?? FF FF FF
+```
+
+with the 6-byte `jne` at `+15` NOPed, the exact bytes that shipped in the 1.0
+release. It also enforces `-insecure` the same way, by reading the target's
+command line out of its WOW64 PEB (32-bit `client.dll` means a 32-bit process),
+and refuses to patch a VAC-secured client.
+
+What this repository's automation *cannot* prove is that a live Windows CS:S
+still matches that pattern: CI compiles, links and cross-links the binary, but
+GitHub runners do not run the game. So the Windows backend is
+"upstream-verified, not re-verified here". On a no-match it patches nothing and
+tells you so; it never writes to a location it did not verify. Reports from
+anyone with a Windows install are welcome.
+
+## Workspace layout
+
+Three crates, because the patcher and the hook library share the hard part
+(finding things in a running Source engine) but ship as completely different
+kinds of binary:
+
+| crate | artifact | what lives there |
+|---|---|---|
+| `bhopfix-core` | rlib | the IDA-style pattern engine (`sig`), ELF/RTTI/GOT reading over `/proc/<pid>/{maps,mem}` (`elf`), and the BSP pakfile case fix (`pakfix`). Contains no writes to another process: it only ever *finds* and *validates*. |
+| `bhopfix-hook` | `libbhopfix.so` (cdylib) | everything injected into the game: rawinput2, the viewpunch remover, the fastdl hijack, the engine console glue, SourceJump. Linux only — `#![cfg(unix)]`. |
+| `bunnyhopfix` | `bunnyhopfix` / `bunnyhopfix.exe` (bin) | the launcher and the prediction patcher, with a Linux backend and a Windows backend. |
+
+Edition 2024, MSRV 1.88, `unsafe_op_in_unsafe_fn` denied workspace-wide: in a
+tool that writes into another process's address space, every hazardous
+operation has to say so at the point it happens rather than inherit permission
+from an `unsafe fn` signature. Only third-party dependency: `libc`.
 
 ## Nothing is addressed by offset
 
 Every location this tool touches — in both backends — is found at runtime by
-what the code *is*: an instruction signature (see `src/sig.rs`), an RTTI class
-name, or a relocation that names a symbol. No link-time addresses, and no
-vtable slot indices either.
+what the code *is*: an instruction signature (see
+`crates/bhopfix-core/src/sig.rs`), an RTTI class name, or a relocation that
+names a symbol. No link-time addresses, and no vtable slot indices either.
 
 That is not stylistic. The 2026-08-24 CS:S update moved code ~0x1e80, moved
 client vtables ~0xa90, and gave `launcher.so`'s data segment an extra page. A
@@ -64,19 +98,132 @@ displacement bytes of the instruction that uses them. Every lookup requires a
 | RawInput2BunnyhopAPE feature | In our port? |
 |---|---|
 | BunnyhopAPE (jump prediction) | ✅ done |
-| RawInput2 (`m_rawinput 2`) | ✅ done |
+| rawinput2 (`m_rawinput 2`) | ✅ done |
 | fastdl.me map hijack | ✅ done (safer variant: no message mutation) |
-| Viewpunch remover (F7) | ✅ done (NOP the CalcView punch-adds; `RAWINPUT2_KEEP_VIEWPUNCH=1` to keep) |
+| Viewpunch remover (F7) | ✅ done (NOP the CalcView punch-adds; `BHOPFIX_KEEP_VIEWPUNCH=1` to keep) |
 | Download progress display | ✅ done (read-only poll of CDownloadManager) |
 | fastdl 404-fallback | ❌ (planned; largely redundant with our ProcessServerInfo hijack) |
 | *(ours)* in-game console (`ClientCmd`) | ✅ enables the three below |
-| *(ours)* auto POV demo recording | ✅ opt-in `RAWINPUT2_DEMOS=1` (for SourceJump submissions) |
+| *(ours)* auto POV demo recording | ✅ opt-in `BHOPFIX_DEMOS=1` (for SourceJump submissions) |
 | *(ours)* SourceJump WRs in the game console | ✅ echoes WRs in-console, not just the terminal |
 | *(ours)* window flash on download-finish | ✅ SDL_FlashWindow when a long download completes |
 | Fullscreen hook (F6) | ➖ N/A on Linux (DXVK + your WM handle this) |
 | *(ours)* pakfile case fix (pink textures) | ✅ Linux-only problem, not in the originals |
 | *(ours)* launch-env hardening | ✅ Linux-only; guards known Source-on-Linux bugs |
 | *(ours)* SourceJump WR display | ✅ prints map world records on connect |
+
+## Component 1: autobhop prediction (the bhop delay fix)
+
+> Makes autobhop feel a lot less laggy on high ping servers — **without**
+> allowing you to cheat scroll times like clientside autobhop does.
+
+Both `CGameMovement::CheckJumpButton` and `CCSGameMovement::CheckJumpButton`
+in `client.so` contain:
+
+```cpp
+if (mv->m_nOldButtons & IN_JUMP)
+    return false;
+```
+
+On autobhop servers the server holds `IN_JUMP` for you, so client-side
+prediction bails out of `CheckJumpButton` every tick and you only *see* the
+jump one round-trip later. The patcher NOPs the 6-byte `jne` after that check
+(in both movement classes on Linux; one site on the 32-bit Windows
+`client.dll`), so the client predicts the jump immediately.
+
+**Use it only on servers that actually do autobhop.** The check being removed
+is the client's own "you are still holding jump, don't re-jump" guard, so on a
+vanilla server (or a plain local `map` listen server) holding jump makes the
+client predict a jump every grounded tick that the server then refuses — the
+correction shows up as the jump animation visibly bugging out. Tapping jump
+still behaves normally, because client and server agree on the first tick.
+That is the patch working as designed, not a fault; toggle prediction off with
+Scroll Lock (`--scroll-lock`) or `kill -USR1 <tool pid>` when you are not on a
+bhop server.
+
+## Component 2: rawinput2 (`m_rawinput 2`)
+
+> Mouse input sampled so it "lines up with the tickrate properly without
+> needing a specific framerate" (momentum mod behavior).
+
+`libbhopfix.so` is injected via `LD_PRELOAD` by the launcher and:
+
+* hooks `launcher.so`'s **GOT entry for SDL_PollEvent** to accumulate raw
+  mouse deltas with hardware timestamps (a GOT hook rather than name
+  interposition, so sdl2-compat's internal SDL3 calls can't recurse into us);
+  the slot is found via the relocation that names the symbol,
+* hooks **`CSDLMgr::GetRawMouseAccumulators`** to serve the accumulated input
+  — identified by its function body inside the class's RTTI vtable, and only
+  installed if the SDL hook is live (our replacement is the sole source of
+  deltas, so hooking it alone would stop mouse input dead),
+* hooks **`CInput::CreateMove`** (IInput slot 3) for the per-tick input sample
+  interval, on both the `CInput` and `CCSInput` vtables — the live singleton
+  is a `CCSInput`, which inherits the same implementation,
+* implements the exact tick-boundary splitting algorithm from the original
+  `main.cpp` — the timestamped `ring_push`/`ring_drain` accumulator in
+  `crates/bhopfix-hook/src/rawinput.rs`, drained against the
+  `SAMPLE_TIME_REMAINING` window the CreateMove hook sets each tick,
+* resolves the `m_rawinput` ConVar at runtime (no hardcoded offsets).
+
+Hooks are vtable-pointer rewrites — no inline code patching. Set
+`m_rawinput 2` in game to enable tick-aligned sampling (`0`/`1` behave like
+stock). `BHOPFIX_DEBUG=1` for verbose logs.
+
+## Component 3: fastdl.me map hijack
+
+Port of rtldg's map-download feature. Never get kicked for
+`Missing map` / `Map differs` on covered servers again.
+
+* Inline-hooks the engine's `CClientState::ProcessServerInfo` — found through
+  the class's RTTI vtable (slot 17), prologue-verified before patching;
+  original runs via trampoline. (A prologue *scan* would be ambiguous: those
+  19 bytes occur at 12 places in engine.so.)
+* On connect, reads the server's **map lump MD5** from the serverinfo message
+  (`msg+0x38` — verified in disassembly) and looks it up in
+  [fastdl.me](https://fastdl.me)'s `lump_checksums.csv` (cached in
+  `~/.cache/bunnyhopfix/`, refreshed every 36h).
+* The map **name** field is auto-detected at runtime by scanning the message
+  for a plausible pointer (all reads via `/proc/self/mem`, so a bad guess
+  can't crash the game — it self-logs the detected offset).
+* If fastdl.me has the server's exact map version, it's downloaded from
+  `https://mainr2.fastdl.me/hashed/<sha1>.bsp.bz2` (decompressed with the
+  system `bzip2`; the legacy plain-`.bsp` endpoint is the fallback) and
+  installed to
+  `cstrike/maps/<mapname>.bsp` (BSP magic verified, atomic rename) **before**
+  the game's own map validation runs — so the check passes and the connect
+  proceeds. A sidecar cache makes repeat connects instant.
+* If fastdl.me doesn't have it, the stock behavior applies unchanged.
+
+Unlike the Windows original, this **doesn't rewrite the serverinfo message**
+(no heap-overflow risk); it simply makes sure the right file is on disk first
+
+## Component 4: viewpunch remover
+
+No screen kick on landings/damage. `C_BasePlayer::CalcView` and a secondary
+view path add `m_vecPunchAngle` onto the rendered eye angles with three
+`addss <punch+0/4/8>(reg),%xmm0` each (pitch/yaw/roll). We **NOP all 9 of
+those adds** so the punch is simply never applied to the view. Skip with
+`BHOPFIX_KEEP_VIEWPUNCH=1`.
+
+The sites are not hard-coded: we decode every `addss disp32(reg),%xmm0` in
+client.so's `.text` and keep those forming a `(D, D+4, D+8)` triple within a
+tight span — the shape of a Vector add — taking the `D` shared by the most
+triples as the punch field. That cleanly ignores the unrelated single adds at
+other offsets in the same binary.
+
+**Why not just zero the field?** `m_vecPunchAngle` is a *predicted* field: the
+client restores it from its prediction backup and re-decays it every frame, so
+zeroing it in the entity (or the descriptor) loses the race — the punch
+reappears (decaying) before most frames render. Never *applying* it wins
+regardless. (An earlier attempt wrote to what looked like a `RecvProp` proxy
+slot; that structure is actually a prediction `typedescription_t` and the write
+crashed the client — this approach touches neither the descriptor nor the
+predicted field.)
+
+**Safety:** every site is checked against the exact instruction bytes decoded
+from client.so before anything is written; if the loaded code differs, the
+remover bails without patching rather than corrupting code. On the 2026-08-24
+build this finds 9 sites in 3 view paths with `m_vecPunchAngle` at `+0x1274`.
 
 ## Component 5: pakfile case fix (pink-texture fix)
 
@@ -99,7 +246,7 @@ It runs everywhere a map can appear:
   fetches — fixed as soon as the download lands (gives up after ~2 min without
   download progress; that first session may need a `retry` in console, every
   later load is clean),
-* manually: `./bunnyhop-ape --fix-maps [game-root]`.
+* manually: `./bunnyhopfix --fix-maps [game-root]`.
 
 Caveat: `sv_pure 1` servers make the client ignore loose files (still no fix
 possible there without repacking); bhop servers virtually all run `sv_pure 0`.
@@ -132,16 +279,16 @@ and each has an opt-out:
   ([steam-for-linux#11446](https://github.com/ValveSoftware/steam-for-linux/issues/11446)).
   We inherit `LD_PRELOAD` but drop that one entry. (Launching via this tool
   instead of Steam usually avoids it already; this is belt-and-suspenders.)
-  Opt out: `BHOP_KEEP_OVERLAY=1`.
+  Opt out: `BHOPFIX_KEEP_OVERLAY=1`.
 * **`DXVK_CONFIG=d3d9.maxFrameLatency = 1`** — caps DXVK's frame queue for
   tighter input latency (the in-game `fps_max` stays the frame limiter).
   Merged into any `DXVK_CONFIG` you set; skipped if `DXVK_CONFIG_FILE` is set.
-  Opt out: `BHOP_NO_DXVK_TWEAKS=1`.
+  Opt out: `BHOPFIX_NO_DXVK_TWEAKS=1`.
 * **`SDL_AUDIODRIVER=pulseaudio`** (+ the SDL3 `SDL_AUDIO_DRIVER` spelling) —
   the SDL PipeWire backend regressed into heavy stutter/echo in 2026
   ([Source-1-Games#8013](https://github.com/ValveSoftware/Source-1-Games/issues/8013));
   pipewire-pulse serves the PulseAudio path cleanly. Opt out:
-  `BHOP_NO_SDL_AUDIO=1`.
+  `BHOPFIX_NO_SDL_AUDIO=1`.
 
 ## Component 7: SourceJump world-record display
 
@@ -150,13 +297,13 @@ name) the tool asks [sourcejump.net](https://sourcejump.net) for the map's
 records and prints the WR plus a couple of chasers to its terminal log:
 
 ```
-[rawinput2] sourcejump WRs for bhop_badges:
-[rawinput2]   WR 5:58.330  Jehoshaphat  (sync 93.8%, 614 strafes)
-[rawinput2]      6:00.040  shinoum      (sync 92.1%, 821 strafes)
+[bhopfix] sourcejump WRs for bhop_badges:
+[bhopfix]   WR 5:58.330  Jehoshaphat  (sync 93.8%, 614 strafes)
+[bhopfix]      6:00.040  shinoum      (sync 92.1%, 821 strafes)
 ```
 
 Read-only, off the engine thread (a slow API never stalls a connect), using
-the community-shared public API key. Opt out: `RAWINPUT2_NO_SOURCEJUMP=1`.
+the community-shared public API key. Opt out: `BHOPFIX_NO_SOURCEJUMP=1`.
 WRs also echo into the **in-game console** via component 8.
 
 ## Component 8: engine glue (console, demos, progress, flash)
@@ -171,7 +318,7 @@ a plain validated indirect call. Built on it:
 * **Console commands** — a thread-safe queue drained from the SDL_PollEvent
   hook (the main/engine thread), so background threads (e.g. SourceJump) can
   safely run commands.
-* **Auto POV demo recording** *(opt-in `RAWINPUT2_DEMOS=1`)* — on connect,
+* **Auto POV demo recording** *(opt-in `BHOPFIX_DEMOS=1`)* — on connect,
   `record <map>_<unixts>` is issued from the first in-game tick (CS:S has no
   autorecord, and SourceJump only accepts demos). Writes `cstrike/*.dem`;
   prune periodically.
@@ -188,146 +335,36 @@ shape-checked before anything is printed (the field offsets are the one thing
 here that can only be re-verified during a live download):
 
 ```
-[rawinput2] downloading bhop_infernoserz.bsp: 45% (31728 / 70446 KB)
-[rawinput2] download complete
+[bhopfix] downloading bhop_infernoserz.bsp: 45% (31728 / 70446 KB)
+[bhopfix] download complete
 ```
 
 On completion the game window flashes (`SDL_FlashWindow`, resolved by name)
 so an alt-tabbed long download grabs your attention.
-
-## Component 4: viewpunch remover
-
-No screen kick on landings/damage. `C_BasePlayer::CalcView` and a secondary
-view path add `m_vecPunchAngle` onto the rendered eye angles with three
-`addss <punch+0/4/8>(reg),%xmm0` each (pitch/yaw/roll). We **NOP all 9 of
-those adds** so the punch is simply never applied to the view. Skip with
-`RAWINPUT2_KEEP_VIEWPUNCH=1`.
-
-The sites are not hard-coded: we decode every `addss disp32(reg),%xmm0` in
-client.so's `.text` and keep those forming a `(D, D+4, D+8)` triple within a
-tight span — the shape of a Vector add — taking the `D` shared by the most
-triples as the punch field. That cleanly ignores the unrelated single adds at
-other offsets in the same binary.
-
-**Why not just zero the field?** `m_vecPunchAngle` is a *predicted* field: the
-client restores it from its prediction backup and re-decays it every frame, so
-zeroing it in the entity (or the descriptor) loses the race — the punch
-reappears (decaying) before most frames render. Never *applying* it wins
-regardless. (An earlier attempt wrote to what looked like a `RecvProp` proxy
-slot; that structure is actually a prediction `typedescription_t` and the write
-crashed the client — this approach touches neither the descriptor nor the
-predicted field.)
-
-**Safety:** every site is checked against the exact instruction bytes decoded
-from client.so before anything is written; if the loaded code differs, the
-remover bails without patching rather than corrupting code. On the 2026-08-24
-build this finds 9 sites in 3 view paths with `m_vecPunchAngle` at `+0x1274`.
-
-## Component 3: fastdl.me map hijack
-
-Port of rtldg's map-download feature. Never get kicked for
-`Missing map` / `Map differs` on covered servers again.
-
-* Inline-hooks the engine's `CClientState::ProcessServerInfo` — found through
-  the class's RTTI vtable (slot 17), prologue-verified before patching;
-  original runs via trampoline. (A prologue *scan* would be ambiguous: those
-  19 bytes occur at 12 places in engine.so.)
-* On connect, reads the server's **map lump MD5** from the serverinfo message
-  (`msg+0x38` — verified in disassembly) and looks it up in
-  [fastdl.me](https://fastdl.me)'s `lump_checksums.csv` (cached in
-  `~/.cache/bunnyhop-ape-linux/`, refreshed every 36h).
-* The map **name** field is auto-detected at runtime by scanning the message
-  for a plausible pointer (all reads via `/proc/self/mem`, so a bad guess
-  can't crash the game — it self-logs the detected offset).
-* If fastdl.me has the server's exact map version, it's downloaded from
-  `https://mainr2.fastdl.me/hashed/<sha1>.bsp.bz2` (decompressed with the
-  system `bzip2`; the legacy plain-`.bsp` endpoint is the fallback) and
-  installed to
-  `cstrike/maps/<mapname>.bsp` (BSP magic verified, atomic rename) **before**
-  the game's own map validation runs — so the check passes and the connect
-  proceeds. A sidecar cache makes repeat connects instant.
-* If fastdl.me doesn't have it, the stock behavior applies unchanged.
-
-Unlike the Windows original, this **doesn't rewrite the serverinfo message**
-(no heap-overflow risk); it simply makes sure the right file is on disk first
-
-## Component 1: autobhop prediction (BunnyhopAPE)
-
-> Makes autobhop feel a lot less laggy on high ping servers — **without**
-> allowing you to cheat scroll times like clientside autobhop does.
-
-Both `CGameMovement::CheckJumpButton` and `CCSGameMovement::CheckJumpButton`
-in `client.so` contain:
-
-```cpp
-if (mv->m_nOldButtons & IN_JUMP)
-    return false;
-```
-
-On autobhop servers the server holds `IN_JUMP` for you, so client-side
-prediction bails out of `CheckJumpButton` every tick and you only *see* the
-jump one round-trip later. The patcher NOPs the 6-byte `jne` after that check
-(in both movement classes), so the client predicts the jump immediately.
-
-**Use it only on servers that actually do autobhop.** The check being removed
-is the client's own "you are still holding jump, don't re-jump" guard, so on a
-vanilla server (or a plain local `map` listen server) holding jump makes the
-client predict a jump every grounded tick that the server then refuses — the
-correction shows up as the jump animation visibly bugging out. Tapping jump
-still behaves normally, because client and server agree on the first tick.
-That is the patch working as designed, not a fault; toggle prediction off with
-Scroll Lock (`--scroll-lock`) or `kill -USR1 <tool pid>` when you are not on a
-bhop server.
-
-## Component 2: rawinput2 (`m_rawinput 2`)
-
-> Mouse input sampled so it "lines up with the tickrate properly without
-> needing a specific framerate" (momentum mod behavior).
-
-`librawinput2.so` is injected via `LD_PRELOAD` by the launcher and:
-
-* hooks `launcher.so`'s **GOT entry for SDL_PollEvent** to accumulate raw
-  mouse deltas with hardware timestamps (a GOT hook rather than name
-  interposition, so sdl2-compat's internal SDL3 calls can't recurse into us);
-  the slot is found via the relocation that names the symbol,
-* hooks **`CSDLMgr::GetRawMouseAccumulators`** to serve the accumulated input
-  — identified by its function body inside the class's RTTI vtable, and only
-  installed if the SDL hook is live (our replacement is the sole source of
-  deltas, so hooking it alone would stop mouse input dead),
-* hooks **`CInput::CreateMove`** (IInput slot 3) for the per-tick input sample
-  interval, on both the `CInput` and `CCSInput` vtables — the live singleton
-  is a `CCSInput`, which inherits the same implementation,
-* implements the exact tick-boundary splitting algorithm from the original
-  `main.cpp` (see `core_split` in `src/lib.rs`),
-* resolves the `m_rawinput` ConVar at runtime (no hardcoded offsets).
-
-Hooks are vtable-pointer rewrites — no inline code patching. Set
-`m_rawinput 2` in game to enable tick-aligned sampling (`0`/`1` behave like
-stock). `RAWINPUT2_DEBUG=1` for verbose logs.
 
 ## Usage
 
 ### Linux
 
 ```sh
-# launch the game through the tool (adds -insecure, injects librawinput2.so,
+# launch the game through the tool (adds -insecure, injects libbhopfix.so,
 # and being the game's parent lets it patch without sudo):
-./bunnyhop-ape
+./bunnyhopfix
 
 # with extra game args:
-./bunnyhop-ape -- -console +exec autoexec
+./bunnyhopfix -- -console +exec autoexec
 
 # keep gamemode active:
-gamemoderun ./bunnyhop-ape
+gamemoderun ./bunnyhopfix
 
 # attach to an already-running game, patcher only (needs sudo):
-sudo ./bunnyhop-ape --attach
+sudo ./bunnyhopfix --attach
 
 # offline: verify the CheckJumpButton signatures against a client.so on disk
-./bunnyhop-ape --scan-file ".../cstrike/bin/linux64/client.so"
+./bunnyhopfix --scan-file ".../cstrike/bin/linux64/client.so"
 
 # fix pink textures in all installed maps right now (see component 5):
-./bunnyhop-ape --fix-maps
+./bunnyhopfix --fix-maps
 
 # check that the patch + hooks are actually live in the running game:
 sudo ./verify-live.sh
@@ -338,9 +375,9 @@ sudo ./verify-live.sh
 Start CS:S yourself with `-insecure`, join a server, then:
 
 ```bat
-bunnyhop-ape.exe                    :: find the game and patch it
-bunnyhop-ape.exe --attach 1234      :: patch a specific pid
-bunnyhop-ape.exe --scroll-lock      :: tie prediction to the Scroll Lock LED
+bunnyhopfix.exe                    :: find the game and patch it
+bunnyhopfix.exe --attach 1234      :: patch a specific pid
+bunnyhopfix.exe --scroll-lock      :: tie prediction to the Scroll Lock LED
 ```
 
 Ctrl+C restores the original bytes. Run it elevated if opening the process
@@ -349,6 +386,25 @@ fails.
 Toggle jump prediction at runtime with **Scroll Lock**, or on Linux
 `kill -USR1 <tool pid>`. Original bytes are restored on
 toggle-off/exit/Ctrl-C.
+
+### Environment variables
+
+All opt-outs and opt-ins, in one place:
+
+| variable | effect |
+|---|---|
+| `BHOPFIX_DEBUG=1` | verbose hook/resolver logging |
+| `BHOPFIX_NO_FORCE=1` | leave `m_rawinput` alone (by default the hook stamps it to `2` once, post-spawn, because `config.cfg` resets it) |
+| `BHOPFIX_DEMOS=1` | auto-record a POV demo per connect (component 8) |
+| `BHOPFIX_KEEP_VIEWPUNCH=1` | keep the view punch (skip component 4) |
+| `BHOPFIX_NO_SOURCEJUMP=1` | do not query sourcejump.net (component 7) |
+| `BHOPFIX_FULLSCREEN=1` | exclusive fullscreen instead of the default borderless windowed (`CSS_FREQ=<hz>` sets the refresh rate, `CSS_FREQ=off` drops `-freq`) |
+| `BHOPFIX_KEEP_OVERLAY=1` | keep `gameoverlayrenderer.so` in `LD_PRELOAD` (component 6) |
+| `BHOPFIX_NO_DXVK_TWEAKS=1` | do not touch `DXVK_CONFIG` (component 6) |
+| `BHOPFIX_NO_SDL_AUDIO=1` | do not set `SDL_AUDIODRIVER` (component 6) |
+
+Cache (fastdl lump checksums, downloaded map sidecars) lives in
+`~/.cache/bunnyhopfix/`.
 
 ## Warning
 
@@ -363,19 +419,71 @@ visibly break. That is the patch working as designed.
 ## Building
 
 ```sh
-cargo build --release
-# -> target/release/bunnyhop-ape
-# -> target/release/librawinput2.so
+cargo build --workspace --release
+# -> target/release/bunnyhopfix
+# -> target/release/libbhopfix.so
 
-cargo test          # pattern engine + resolver regression tests
+cargo test --workspace      # pattern engine + resolver regression tests
 ```
 
 The resolver tests read the installed game if it is present and skip when it is
-not, so they are a genuine "did a game update break the lookups?" check.
+not, so on a developer's machine they are a genuine "did a game update break the
+lookups?" check, and on a bare CI runner they pass without one.
+
+Windows binaries are built natively in CI, and cross-built from Linux for the
+development loop with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+```
 
 Only dependency is `libc`. Everything else is plain
 `/proc/<pid>/{maps,mem,cmdline}`, sysfs (`/sys/class/leds/*::scrolllock`),
 and `dlopen`/`dlsym` for SDL2.
+
+## Releases and CI
+
+| workflow | when | what it does |
+|---|---|---|
+| `ci.yml` | every push to `main`, every PR | `fmt` + `clippy -D warnings`, `cargo test --workspace`, native Linux build, native Windows build, the zigbuild cross-compile, and an MSRV 1.88 `cargo check` |
+| `release.yml` | pushing a `v*` tag (or manual dispatch with a tag) | builds Linux and Windows natively, packages them, and publishes the GitHub release |
+| `schedule.yml` | Mondays 05:00 UTC (`0 5 * * 1`), or manual | the toolchain canary and the `nightly` rolling build |
+
+**Tagged releases are cut by hand.** That is deliberate: this tool is verified
+against a *running* game, which no runner can do, so a release means a human
+played on it.
+
+```sh
+git tag v2.0.1 && git push --tags
+```
+
+Release assets:
+
+| asset | contents |
+|---|---|
+| `bunnyhopfix-<tag>-x86_64-linux.tar.gz` | `bunnyhopfix`, `libbhopfix.so`, `README.md`, `LICENSE`, `verify-live.sh` |
+| `bunnyhopfix-<tag>-x86_64-windows.zip` | `bunnyhopfix.exe`, `README.md`, `LICENSE` |
+| `bunnyhopfix.exe` | the bare executable, under the same name the C++ 1.0 release used |
+| `SHA256SUMS.txt` | checksums of all of the above |
+
+`bunnyhopfix.exe` is built with a statically linked CRT
+(`-C target-feature=+crt-static`), so it needs no VC++ redistributable — one
+file, download and run, like the 1.0 asset.
+
+**`nightly` refreshes weekly.** Every Monday, if `main` has moved since the
+`nightly` tag, the tag is force-moved and the `nightly` prerelease is rebuilt
+with the same asset names (so links stay stable). If nothing changed, the job
+skips cleanly rather than republishing an identical build. A nightly is CI-clean
+and nothing more — no live game has seen it.
+
+**The canary reports toolchain rot even in a quiet week.** The same Monday run
+builds and tests the workspace on `stable`, `beta` and `nightly` rustc. A
+`stable`/`beta` failure means the toolchain moved under us — a new lint, a
+behaviour change — and files (or comments on) a single `Weekly canary failed`
+issue, so a long breakage is one thread and not one issue per week. `nightly`
+rustc is `continue-on-error`: it is a weather report, not a gate.
 
 ## License
 

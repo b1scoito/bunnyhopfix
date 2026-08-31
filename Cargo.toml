@@ -1,23 +1,38 @@
-[package]
-name = "bunnyhop-ape"
-version = "0.2.0"
-edition = "2021"
-description = "Autobhop Prediction Enabler + RawInput2 (m_rawinput 2) for Counter-Strike: Source (Linux + Windows)"
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+# Shared metadata: the three crates are one product and always ship together.
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.88"
 license = "GPL-3.0-only"
+repository = "https://github.com/b1scoito/bunnyhopfix"
+homepage = "https://github.com/b1scoito/bunnyhopfix"
+keywords = ["counter-strike", "source-engine", "bunnyhop", "gaming"]
+categories = ["games"]
 
-[lib]
-name = "rawinput2"
-crate-type = ["cdylib", "rlib"]
-path = "src/lib.rs"
-
-[[bin]]
-name = "bunnyhop-ape"
-path = "src/main.rs"
-
-[dependencies]
+[workspace.dependencies]
+bhopfix-core = { path = "crates/bhopfix-core" }
 libc = "0.2"
+
+# This tool writes into another process's memory: correctness lints are not
+# optional, and an unsafe operation must say so at the point it happens rather
+# than inherit permission from an `unsafe fn` signature.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 
 [profile.release]
 opt-level = 2
+lto = "thin"
+codegen-units = 1
 strip = true
+# A hook that corrupts the game should take the game down loudly, not limp on
+# with a half-applied patch and a poisoned mutex.
 panic = "abort"

@@ -1,12 +1,14 @@
 #!/bin/bash
-# verify-live.sh — check that the patch + hooks are actually live in the game.
+# verify-live.sh — check that bunnyhopfix's patch + hooks are actually live in
+# the running game.
 #
 # Deliberately address-free: it finds things the same way the tool does, by
-# instruction signature and by looking for pointers into librawinput2, so a
+# instruction signature and by looking for pointers into libbhopfix, so a
 # game update can never make this script report nonsense. (The previous version
 # hard-coded vaddrs from an old build and happily printed wrong expectations.)
 #
 # Usage: sudo ./verify-live.sh
+#   Run it while the game launched by `bunnyhopfix` is up.
 #   (reading another process's memory needs ptrace rights: with the usual
 #    kernel.yama.ptrace_scope=1 only root or the game's own parent may do it)
 set -u
@@ -41,15 +43,15 @@ def read(addr, n):
     except OSError:
         return b""
 
-hook = ranges("librawinput2.so")
+hook = ranges("libbhopfix.so")
 if not hook:
-    print("librawinput2.so NOT loaded -> no hooks (LD_PRELOAD failed?)")
+    print("libbhopfix.so NOT loaded -> no hooks (LD_PRELOAD failed?)")
     sys.exit(1)
 lo, hi = min(r[0] for r in hook), max(r[1] for r in hook)
-print(f"librawinput2.so: 0x{lo:x}-0x{hi:x}\n")
+print(f"libbhopfix.so: 0x{lo:x}-0x{hi:x}\n")
 
-# --- 1. installed hooks: pointers into librawinput2 sitting in game data -----
-print("installed hooks (game data slots pointing into librawinput2):")
+# --- 1. installed hooks: pointers into libbhopfix sitting in game data -----
+print("installed hooks (game data slots pointing into libbhopfix):")
 found = 0
 for name in ("/client.so", "/launcher.so", "/engine.so"):
     for s, e, _p, path in ranges(name, "rw"):
