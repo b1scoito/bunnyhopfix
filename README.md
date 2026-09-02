@@ -6,84 +6,87 @@ of one server round-trip later.
 
 **2.0.0 is a full Rust rewrite of the C++ `bunnyhopfix`.** The 1.0 TODO list
 was exactly two items — *Linux support* and *code organization* — and this
-release is both: a native Linux backend (the original was Windows-only), a
-Windows backend that keeps 1.0's production signature, and a three-crate
-workspace instead of one translation unit. It supersedes the C++
-implementation; 1.0 is kept only as history.
+release is both. The maintained targets are native **Linux x86-64** and
+**Windows x86-64**; 32-bit game builds are not supported.
 
 Lineage: the prediction patch is the technique from
 [alkatrazbhop/BunnyhopAPE](https://github.com/alkatrazbhop/BunnyhopAPE), which
 b1scoito's C++ [bunnyhopfix](https://github.com/b1scoito/bunnyhopfix) packaged
-as a standalone Windows patcher. The Linux build additionally ports
-[rtldg/RawInput2BunnyhopAPE](https://github.com/rtldg/RawInput2BunnyhopAPE)
-(rawinput2, fastdl map hijack, viewpunch remover) and adds a handful of
-Linux-only fixes of our own.
+as a standalone Windows patcher. The common hook feature set comes from
+[rtldg/RawInput2BunnyhopAPE](https://github.com/rtldg/RawInput2BunnyhopAPE).
+The Windows x64 implementation uses the signatures and calling-convention
+work from its [x64 pull request](https://github.com/rtldg/RawInput2BunnyhopAPE/pull/2),
+then fills the fastdl gap that pull request intentionally left disabled.
 
 | artifact | what it is |
 |---|---|
-| `bunnyhopfix` | launcher/patcher: the autobhop jump-prediction patch |
-| `libbhopfix.so` | LD_PRELOAD hook library, Linux only: momentum-style `m_rawinput 2` **+ fastdl.me map hijack + viewpunch remover + engine console glue** |
-| `bunnyhopfix.exe` | Windows build of the patcher (prediction patch only) — built by CI, **not a tagged-release download today**; see [Platform support](#platform-support) |
+| `bunnyhopfix` | Linux launcher/controller and autobhop prediction patcher |
+| `libbhopfix.so` | Linux LD_PRELOAD hook: rawinput2, fastdl, viewpunch, SourceJump, and engine integration |
+| `bunnyhopfix.exe` | Windows controller and autobhop prediction patcher |
+| `bhopfix.dll` | Windows injected hook implementing the common feature set plus fullscreen preservation; keep it beside `bunnyhopfix.exe` |
 
 ## Platform support
 
-| | Linux | Windows |
+| feature | Linux x86-64 | Windows x86-64 |
 |---|---|---|
-| autobhop prediction patch | ✅ verified on build 10897846 | ⚠️ builds in CI, not shipped as a release asset — verification pending |
-| `m_rawinput 2`, viewpunch, fastdl, console glue | ✅ | ❌ (LD_PRELOAD/ELF/procfs only) |
-| launches the game for you | ✅ | ❌ start CS:S yourself, then attach |
+| autobhop prediction patch | ✅ | ✅ |
+| tick-aligned `m_rawinput 2` | ✅ | ✅ |
+| viewpunch remover | ✅ | ✅ |
+| fastdl.me exact-map interception | ✅ | ✅ |
+| engine console, demos, download progress/flash | ✅ | ✅ |
+| SourceJump world records | ✅ | ✅ |
+| fullscreen control | launcher environment | F6 preservation toggle |
+| BSP pakfile case fix | ✅ Linux filesystem workaround | N/A: Windows lookups are already case-insensitive |
+| launch-environment hardening | ✅ Linux-specific | N/A |
+| starts CS:S | ✅ | attach to a game you started with `-insecure` |
 
-The Windows port is deliberately narrow: it finds `client.dll` in a running
-game, patches `CheckJumpButton`, offers the same Scroll Lock toggle, and
-restores the bytes on exit. Its signature is not a guess — it is the C++
-bunnyhopfix's own shipped pattern,
+The Windows controller accepts only `cstrike_win64.exe` (or an explicit native
+x86-64 PID), confirms an exact `-insecure` command-line argument, finds both
+`CheckJumpButton` implementations in `client.dll`, and injects `bhopfix.dll`.
+The DLL resolves every hook from live PE exports, RTTI, vtables, and unique
+instruction signatures. Missing or ambiguous targets abort installation rather
+than enabling a partial feature set.
+
+The two Windows signatures describe the same `m_nOldButtons + 0x28` /
+`IN_JUMP == 2` checks as the independently derived Linux signatures:
 
 ```
-85 C0 8B 46 08 0F 84 ?? FF FF FF F6 40 28 02 0F 85 ?? FF FF FF
+80 B9 50 14 00 00 00 0F 85 ?? ?? ?? ?? 48 8B 43 10 F6 40 28 02 0F 85 ?? ?? ?? ??
+48 8B 05 ?? ?? ?? ?? 48 8D 73 10 83 78 58 00 75 ?? 48 8B 06 F6 40 28 02 75 ??
 ```
 
-with the 6-byte `jne` at `+15` NOPed, the exact bytes that shipped in the 1.0
-release. It also enforces `-insecure` the same way, by reading the target's
-command line out of its WOW64 PEB (32-bit `client.dll` means a 32-bit process),
-and refuses to patch a VAC-secured client.
+The 6-byte near `jne` in the first match and 2-byte short `jne` in the second
+are NOPed as one transaction. Windows suspends the target threads, preflights
+every original byte and page protection, verifies each write, and rolls the
+whole set back on failure. Hook installation/restoration follows the same
+fail-closed rule. The DLL is unloaded only after hooks point away from it and
+active callbacks have drained; an uncertain cleanup requires a game restart
+instead of risking execution through freed code.
 
-What this repository's automation *cannot* prove is that a live Windows CS:S
-still matches that pattern, and more than that: no part of the Windows backend
-has ever executed on Windows. CI compiles, links and cross-links the binary,
-but GitHub runners do not run the game. The byte signature is not the unproven
-part — it shipped to real users in 1.0. What has never run is the Rust around
-it: the Toolhelp process enumeration, the WOW64 PEB command-line read,
-`VirtualProtectEx`/`WriteProcessMemory`, the Scroll Lock toggle and the
-restore-on-exit path. On a no-match it patches nothing and tells you so; it
-never writes to a location it did not verify — but "it refuses safely" is
-itself a claim nobody has watched come true.
-
-Consequently **no Windows binary is attached to a tagged release.** Publishing
-an asset nobody has ever executed would contradict everything else here, where
-a slot is validated against the module file before it is written and a pattern
-that does not match uniquely disables its own feature. CI still builds the
-Windows binary on every push — natively on `windows-latest` and cross-compiled
-with zig — so the port cannot rot while it waits, and the weekly `nightly`
-prerelease carries one alongside the Linux build. Verification on a real
-Windows install is pending; once it passes, the Windows job returns to
-`release.yml` and its assets to the download list.
+The native Windows x64 path was exercised on 2026-09-01 against CS:S build
+10897846. The game-side prediction behavior was confirmed in play. Automated
+live checks then re-derived both prediction sites and every DLL resolver,
+observed 100/100 synthetic raw mouse events through the `WM_INPUT` hook,
+toggled and byte-verified both fullscreen patches, toggled viewpunch, restored
+the exact original prediction/fullscreen bytes, and confirmed that
+`bhopfix.dll` disappeared after Ctrl+C. The fastdl checksum feed and a hashed
+map were also fetched from the production endpoints; its compressed payload
+expanded to a valid `VBSP` whose SHA-1 matched its URL.
 
 ## Workspace layout
 
-Three crates, because the patcher and the hook library share the hard part
-(finding things in a running Source engine) but ship as completely different
-kinds of binary:
+Three crates, because the controller and injected library share parsers but
+have different process-lifecycle responsibilities:
 
 | crate | artifact | what lives there |
 |---|---|---|
-| `bhopfix-core` | rlib | the IDA-style pattern engine (`sig`), ELF/RTTI/GOT reading over `/proc/<pid>/{maps,mem}` (`elf`), and the BSP pakfile case fix (`pakfix`). Contains no writes to another process: it only ever *finds* and *validates*. |
-| `bhopfix-hook` | `libbhopfix.so` (cdylib) | everything injected into the game: rawinput2, the viewpunch remover, the fastdl hijack, the engine console glue, SourceJump. Linux only — `#![cfg(unix)]`. |
-| `bunnyhopfix` | `bunnyhopfix` / `bunnyhopfix.exe` (bin) | the launcher and the prediction patcher, with a Linux backend and a Windows backend. |
+| `bhopfix-core` | rlib | portable signature and PE readers, Linux ELF/RTTI/GOT reading, BSP pakfile repair, and the Windows control-block protocol |
+| `bhopfix-hook` | `libbhopfix.so` / `bhopfix.dll` | everything injected into the game: rawinput2, viewpunch, fastdl, engine glue, SourceJump, and Windows fullscreen preservation |
+| `bunnyhopfix` | `bunnyhopfix` / `bunnyhopfix.exe` | Linux launcher plus the platform prediction patchers and Windows DLL lifecycle controller |
 
 Edition 2024, MSRV 1.88, `unsafe_op_in_unsafe_fn` denied workspace-wide: in a
-tool that writes into another process's address space, every hazardous
-operation has to say so at the point it happens rather than inherit permission
-from an `unsafe fn` signature. Only third-party dependency: `libc`.
+tool that writes into a live process, every hazardous operation has to state
+that permission at the operation rather than inherit it from an `unsafe fn`.
 
 ## Nothing is addressed by offset
 
@@ -109,30 +112,27 @@ field offset and the serverinfo MD5 offset are both recovered from the
 displacement bytes of the instruction that uses them. Every lookup requires a
 *unique* match and disables its own feature rather than guessing.
 
-| RawInput2BunnyhopAPE feature | In our port? |
-|---|---|
-| BunnyhopAPE (jump prediction) | ✅ done |
-| rawinput2 (`m_rawinput 2`) | ✅ done |
-| fastdl.me map hijack | ✅ done (safer variant: no message mutation) |
-| Viewpunch remover (F7) | ✅ done (NOP the CalcView punch-adds; `BHOPFIX_KEEP_VIEWPUNCH=1` to keep) |
-| Download progress display | ✅ done (read-only poll of CDownloadManager) |
-| fastdl 404-fallback | ❌ (planned; largely redundant with our ProcessServerInfo hijack) |
-| *(ours)* in-game console (`ClientCmd`) | ✅ enables the three below |
-| *(ours)* auto POV demo recording | ✅ opt-in `BHOPFIX_DEMOS=1` (for SourceJump submissions) |
-| *(ours)* SourceJump WRs in the game console | ✅ echoes WRs in-console, not just the terminal |
-| *(ours)* window flash on download-finish | ✅ SDL_FlashWindow when a long download completes |
-| Fullscreen hook (F6) | ➖ N/A on Linux (DXVK + your WM handle this) |
-| *(ours)* pakfile case fix (pink textures) | ✅ Linux-only problem, not in the originals |
-| *(ours)* launch-env hardening | ✅ Linux-only; guards known Source-on-Linux bugs |
-| *(ours)* SourceJump WR display | ✅ prints map world records on connect |
+| feature | Linux x86-64 | Windows x86-64 |
+|---|---|---|
+| BunnyhopAPE prediction | ✅ | ✅ |
+| rawinput2 (`m_rawinput 2`) | ✅ | ✅ |
+| fastdl.me map hijack + compressed/plain fallback | ✅ | ✅ |
+| viewpunch remover (F7 on Windows) | ✅ | ✅ |
+| download progress + completion flash | ✅ | ✅ |
+| validated in-game console (`ClientCmd`) | ✅ | ✅ |
+| automatic POV demos (`BHOPFIX_DEMOS=1`) | ✅ | ✅ |
+| SourceJump records in the terminal and game console | ✅ | ✅ |
+| fullscreen preservation (F6) | N/A | ✅ |
+| BSP pakfile case fix | ✅ | N/A |
+| launch-environment hardening | ✅ | N/A |
 
 ## Component 1: autobhop prediction (the bhop delay fix)
 
 > Makes autobhop feel a lot less laggy on high ping servers — **without**
 > allowing you to cheat scroll times like clientside autobhop does.
 
-Both `CGameMovement::CheckJumpButton` and `CCSGameMovement::CheckJumpButton`
-in `client.so` contain:
+Both `CGameMovement::CheckJumpButton` and
+`CCSGameMovement::CheckJumpButton` in the platform client module contain:
 
 ```cpp
 if (mv->m_nOldButtons & IN_JUMP)
@@ -141,9 +141,10 @@ if (mv->m_nOldButtons & IN_JUMP)
 
 On autobhop servers the server holds `IN_JUMP` for you, so client-side
 prediction bails out of `CheckJumpButton` every tick and you only *see* the
-jump one round-trip later. The patcher NOPs the 6-byte `jne` after that check
-(in both movement classes on Linux; one site on the 32-bit Windows
-`client.dll`), so the client predicts the jump immediately.
+jump one round-trip later. The patcher removes the validated conditional branch
+after that check in both movement classes, so the client predicts the jump
+immediately. Linux and Windows each require exactly two platform-specific
+x86-64 matches before either site is changed.
 
 **Use it only on servers that actually do autobhop.** The check being removed
 is the client's own "you are still holding jump, don't re-jump" guard, so on a
@@ -160,56 +161,51 @@ bhop server.
 > Mouse input sampled so it "lines up with the tickrate properly without
 > needing a specific framerate" (momentum mod behavior).
 
-`libbhopfix.so` is injected via `LD_PRELOAD` by the launcher and:
+Both hooks implement the original timestamped ring/split algorithm, but use
+the native input path for each platform:
 
-* hooks `launcher.so`'s **GOT entry for SDL_PollEvent** to accumulate raw
-  mouse deltas with hardware timestamps (a GOT hook rather than name
-  interposition, so sdl2-compat's internal SDL3 calls can't recurse into us);
-  the slot is found via the relocation that names the symbol,
-* hooks **`CSDLMgr::GetRawMouseAccumulators`** to serve the accumulated input
-  — identified by its function body inside the class's RTTI vtable, and only
-  installed if the SDL hook is live (our replacement is the sole source of
-  deltas, so hooking it alone would stop mouse input dead),
-* hooks **`CInput::CreateMove`** (IInput slot 3) for the per-tick input sample
-  interval, on both the `CInput` and `CCSInput` vtables — the live singleton
-  is a `CCSInput`, which inherits the same implementation,
-* implements the exact tick-boundary splitting algorithm from the original
-  `main.cpp` — the timestamped `ring_push`/`ring_drain` accumulator in
-  `crates/bhopfix-hook/src/rawinput.rs`, drained against the
-  `SAMPLE_TIME_REMAINING` window the CreateMove hook sets each tick,
-* resolves the `m_rawinput` ConVar at runtime (no hardcoded offsets).
+* **Linux:** hook `launcher.so`'s relocation-backed `SDL_PollEvent` GOT slot to
+  timestamp mouse events, the RTTI-resolved
+  `CSDLMgr::GetRawMouseAccumulators` vtable slot to serve them, and the
+  `CInput`/`CCSInput` tick callback to establish the sample boundary.
+* **Windows:** inline-hook the uniquely matched `CInputSystem::WindowProc` to
+  read `WM_INPUT` through `GetRawInputData`, then hook the RTTI-resolved
+  `CInputSystem::GetRawMouseAccumulators` and both
+  `CInput`/`CCSInput::IN_SetSampleTime` vtable slots.
+* **Both:** resolve and validate the live `m_rawinput` ConVar and drain only
+  events belonging to the current input tick. Mode `2` uses the tick-aligned
+  stream; modes `0` and `1` continue through the stock behavior.
 
-Hooks are vtable-pointer rewrites — no inline code patching. Set
-`m_rawinput 2` in game to enable tick-aligned sampling (`0`/`1` behave like
-stock). `BHOPFIX_DEBUG=1` for verbose logs.
+The launcher defaults `m_rawinput` to `2` once the client is ticking because
+`config.cfg` can reset it. Use `BHOPFIX_NO_FORCE=1` to leave the initial value
+alone and `BHOPFIX_DEBUG=1` for sampling telemetry.
 
 ## Component 3: fastdl.me map hijack
 
 Port of rtldg's map-download feature. Never get kicked for
 `Missing map` / `Map differs` on covered servers again.
 
-* Inline-hooks the engine's `CClientState::ProcessServerInfo` — found through
-  the class's RTTI vtable (slot 17), prologue-verified before patching;
-  original runs via trampoline. (A prologue *scan* would be ambiguous: those
-  19 bytes occur at 12 places in engine.so.)
-* On connect, reads the server's **map lump MD5** from the serverinfo message
-  (`msg+0x38` — verified in disassembly) and looks it up in
-  [fastdl.me](https://fastdl.me)'s `lump_checksums.csv` (cached in
-  `~/.cache/bunnyhopfix/`, refreshed every 36h).
-* The map **name** field is auto-detected at runtime by scanning the message
-  for a plausible pointer (all reads via `/proc/self/mem`, so a bad guess
-  can't crash the game — it self-logs the detected offset).
-* If fastdl.me has the server's exact map version, it's downloaded from
-  `https://mainr2.fastdl.me/hashed/<sha1>.bsp.bz2` (decompressed with the
-  system `bzip2`; the legacy plain-`.bsp` endpoint is the fallback) and
-  installed to
-  `cstrike/maps/<mapname>.bsp` (BSP magic verified, atomic rename) **before**
-  the game's own map validation runs — so the check passes and the connect
-  proceeds. A sidecar cache makes repeat connects instant.
-* If fastdl.me doesn't have it, the stock behavior applies unchanged.
+* Hooks the engine's RTTI-resolved
+  `CClientState::ProcessServerInfo` virtual. Linux installs a validated inline
+  trampoline; Windows replaces the validated vtable pointer and drains active
+  callbacks before unload.
+* Recovers both the server's **map lump MD5** and map-name message
+  displacements from the instructions that copy them; no fixed message layout
+  is trusted.
+* Looks the MD5 up in [fastdl.me](https://fastdl.me)'s
+  `lump_checksums.csv`, cached for 36 hours.
+* Downloads the exact version from
+  `https://mainr2.fastdl.me/hashed/<sha1>.bsp.bz2`, with the legacy plain
+  `.bsp` endpoint as fallback. Linux uses the system `bzip2`; Windows uses the
+  linked Rust decoder.
+* Verifies `VBSP` magic and the expected SHA-1, then atomically installs
+  `cstrike/maps/<mapname>.bsp` **before** stock map validation. A sidecar makes
+  repeat connects instant. A miss or failed validation leaves stock behavior
+  unchanged.
 
-Unlike the Windows original, this **doesn't rewrite the serverinfo message**
-(no heap-overflow risk); it simply makes sure the right file is on disk first
+Unlike the original implementation, this never rewrites the serverinfo message
+(and therefore cannot overflow its map-name buffer); it puts the validated map
+on disk before calling the original handler.
 
 ## Component 4: viewpunch remover
 
@@ -219,11 +215,11 @@ view path add `m_vecPunchAngle` onto the rendered eye angles with three
 those adds** so the punch is simply never applied to the view. Skip with
 `BHOPFIX_KEEP_VIEWPUNCH=1`.
 
-The sites are not hard-coded: we decode every `addss disp32(reg),%xmm0` in
-client.so's `.text` and keep those forming a `(D, D+4, D+8)` triple within a
-tight span — the shape of a Vector add — taking the `D` shared by the most
-triples as the punch field. That cleanly ignores the unrelated single adds at
-other offsets in the same binary.
+The sites are not hard-coded: each backend decodes every
+`addss disp32(reg),%xmm0` in the client module's executable image and keeps
+those forming a `(D, D+4, D+8)` triple within a tight span — the shape of a
+Vector add — taking the `D` shared by the most triples as the punch field. That
+cleanly ignores unrelated scalar adds in the same binary.
 
 **Why not just zero the field?** `m_vecPunchAngle` is a *predicted* field: the
 client restores it from its prediction backup and re-decays it every frame, so
@@ -234,10 +230,10 @@ slot; that structure is actually a prediction `typedescription_t` and the write
 crashed the client — this approach touches neither the descriptor nor the
 predicted field.)
 
-**Safety:** every site is checked against the exact instruction bytes decoded
-from client.so before anything is written; if the loaded code differs, the
-remover bails without patching rather than corrupting code. On the 2026-08-24
-build this finds 9 sites in 3 view paths with `m_vecPunchAngle` at `+0x1274`.
+**Safety:** every site is checked against the exact decoded instruction before
+anything is written; a mismatch rejects the whole patch set. On build 10897846,
+Linux resolves 9 adds in 3 paths at field `+0x1274`; Windows resolves the active
+pitch/yaw/roll triple at field `+0x7a8`.
 
 ## Component 5: pakfile case fix (pink-texture fix)
 
@@ -322,39 +318,44 @@ WRs also echo into the **in-game console** via component 8.
 
 ## Component 8: engine glue (console, demos, progress, flash)
 
-Resolves `IVEngineClient` by asking engine.so's own exported `CreateInterface`
-for `VEngineClient014`, then confirms the object's RTTI really names
-`CEngineClient` before calling vtable slot 7 = `ClientCmd` (verified in
-disassembly to tail-call `Cbuf_AddText`). No addresses, and any mismatch
-disables the console features rather than risking a fault. No code patching;
-a plain validated indirect call. Built on it:
+Each backend calls the engine module's exported `CreateInterface` for
+`VEngineClient014`, verifies that the returned object's RTTI and vtable belong
+to `CEngineClient`, and locates the `ClientCmd` virtual by its implementation.
+No fixed vtable index is trusted. Built on it:
 
-* **Console commands** — a thread-safe queue drained from the SDL_PollEvent
-  hook (the main/engine thread), so background threads (e.g. SourceJump) can
-  safely run commands.
+* **Console commands** — a bounded thread-safe queue drained from a game-thread
+  input callback, so background workers such as SourceJump never call engine
+  code directly.
 * **Auto POV demo recording** *(opt-in `BHOPFIX_DEMOS=1`)* — on connect,
-  `record <map>_<unixts>` is issued from the first in-game tick (CS:S has no
-  autorecord, and SourceJump only accepts demos). Writes `cstrike/*.dem`;
-  prune periodically.
-* **SourceJump WRs in-console** — component 7's WRs are `echo`'d into the game
-  console, sanitized to a safe charset.
+  `record <map>_<unixts>` is issued from the first in-game tick. Demos land in
+  `cstrike/`; prune them periodically.
+* **SourceJump records in-console** — component 7's rows are sanitized and
+  passed through `echo`.
 
-Download progress + window flash need no ClientCmd — they poll the
-`CDownloadManager` singleton, located at runtime by scanning engine.so's
-writable image (including the anonymous `.bss` tail) for an object whose vptr
-is that class's RTTI vtable. Its active request is at `+0x28`; fields at
-`+0x03` http, `+0x08` state, `+0x314` name, `+0x618/+0x61c` total/current.
-All reads are read-only and fault-safe from the SDL hook, and the request is
-shape-checked before anything is printed (the field offsets are the one thing
-here that can only be re-verified during a live download):
+Download progress is a read-only poll of the uniquely identified
+`CDownloadManager` singleton. Its vtable, update implementation, active request,
+state, name, and byte counts are validated before output:
 
 ```
 [bhopfix] downloading bhop_infernoserz.bsp: 45% (31728 / 70446 KB)
 [bhopfix] download complete
 ```
 
-On completion the game window flashes (`SDL_FlashWindow`, resolved by name)
-so an alt-tabbed long download grabs your attention.
+After a long download completes, Linux calls the resolved `SDL_FlashWindow`;
+Windows calls `FlashWindow` on the HWND observed by its input hook.
+
+## Component 9: fullscreen behavior
+
+On Windows, F6 atomically toggles the two changes used by the upstream x64
+pull request: the validated branch in
+`CVideoMode_MaterialSystem::ReleaseVideo`, and the matching system `d3d9.dll`
+fullscreen-loss branch. It is off by default. Both sites are preflighted,
+written, and restored as one transaction; Ctrl+C always restores the original
+bytes before the DLL unloads.
+
+Linux needs no Direct3D patch. `BHOPFIX_FULLSCREEN=1` asks the launcher for
+exclusive fullscreen instead of its default borderless mode; `CSS_FREQ=<hz>`
+sets the requested refresh rate and `CSS_FREQ=off` removes `-freq`.
 
 ## Usage
 
@@ -386,41 +387,51 @@ sudo ./verify-live.sh
 
 ### Windows
 
-`bunnyhopfix.exe` is not attached to a tagged release ([why](#platform-support))
-— take it from a CI run's `build-windows` artifact or from the weekly `nightly`
-prerelease. Start CS:S yourself with `-insecure`, join a server, then:
+Download the `bunnyhopfix-<tag>-x86_64-windows.zip` release and extract it.
+`bunnyhopfix.exe` and `bhopfix.dll` must remain in the same directory. Set
+`-insecure` in CS:S launch options, start the native x64 game, then run:
 
 ```bat
-bunnyhopfix.exe                    :: find the game and patch it
-bunnyhopfix.exe --attach 1234      :: patch a specific pid
-bunnyhopfix.exe --scroll-lock      :: tie prediction to the Scroll Lock LED
+bunnyhopfix.exe                    :: auto-detect cstrike_win64.exe
+bunnyhopfix.exe --attach 1234      :: attach to one native x64 pid
+bunnyhopfix.exe --scroll-lock      :: let Scroll Lock also toggle prediction
 ```
 
-Ctrl+C restores the original bytes. Run it elevated if opening the process
-fails.
+Runtime keys: **F5** prediction, **F6** fullscreen preservation, **F7**
+viewpunch removal. Prediction and viewpunch removal start enabled; fullscreen
+preservation starts disabled. Ctrl+C restores every prediction/hook patch,
+waits for active callbacks, and unloads `bhopfix.dll`. If cleanup cannot be
+proven, the controller says to restart the game instead of unloading unsafe
+code. Run elevated only if Windows denies opening the game process.
 
-Toggle jump prediction at runtime with **Scroll Lock**, or on Linux
-`kill -USR1 <tool pid>`. Original bytes are restored on
-toggle-off/exit/Ctrl-C.
+On Linux, `kill -USR1 <tool pid>` toggles prediction.
 
 ### Environment variables
 
-All opt-outs and opt-ins, in one place:
+| variable | platform | effect |
+|---|---|---|
+| `BHOPFIX_DEBUG=1` | both | verbose hook/resolver and input telemetry |
+| `BHOPFIX_LOG=<filter>` | both | controller tracing filter, for example `debug` or `bhopfix_hook=debug` |
+| `BHOPFIX_NO_FORCE=1` | both | leave the initial `m_rawinput` value alone |
+| `BHOPFIX_DEMOS=1` | both | auto-record one POV demo per connect (component 8) |
+| `BHOPFIX_KEEP_VIEWPUNCH=1` | both | start without viewpunch removal |
+| `BHOPFIX_NO_SOURCEJUMP=1` | both | do not query sourcejump.net |
+| `BHOPFIX_FULLSCREEN=1` | Linux | request exclusive fullscreen instead of borderless |
+| `CSS_FREQ=<hz>` / `CSS_FREQ=off` | Linux | set or remove the fullscreen refresh-rate argument |
+| `BHOPFIX_KEEP_OVERLAY=1` | Linux | retain `gameoverlayrenderer.so` in `LD_PRELOAD` |
+| `BHOPFIX_NO_DXVK_TWEAKS=1` | Linux | leave `DXVK_CONFIG` unchanged |
+| `BHOPFIX_NO_SDL_AUDIO=1` | Linux | leave the SDL audio driver unchanged |
 
-| variable | effect |
-|---|---|
-| `BHOPFIX_DEBUG=1` | verbose hook/resolver logging |
-| `BHOPFIX_NO_FORCE=1` | leave `m_rawinput` alone (by default the hook stamps it to `2` once, post-spawn, because `config.cfg` resets it) |
-| `BHOPFIX_DEMOS=1` | auto-record a POV demo per connect (component 8) |
-| `BHOPFIX_KEEP_VIEWPUNCH=1` | keep the view punch (skip component 4) |
-| `BHOPFIX_NO_SOURCEJUMP=1` | do not query sourcejump.net (component 7) |
-| `BHOPFIX_FULLSCREEN=1` | exclusive fullscreen instead of the default borderless windowed (`CSS_FREQ=<hz>` sets the refresh rate, `CSS_FREQ=off` drops `-freq`) |
-| `BHOPFIX_KEEP_OVERLAY=1` | keep `gameoverlayrenderer.so` in `LD_PRELOAD` (component 6) |
-| `BHOPFIX_NO_DXVK_TWEAKS=1` | do not touch `DXVK_CONFIG` (component 6) |
-| `BHOPFIX_NO_SDL_AUDIO=1` | do not set `SDL_AUDIODRIVER` (component 6) |
+Controller diagnostics are structured `tracing` events written to stderr.
+`BHOPFIX_LOG` accepts
+[`EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+directives. `BHOPFIX_DEBUG=1` remains the simple shorthand for debug-level
+controller output and hook instrumentation. On Windows, the unloadable DLL
+publishes typed log records through shared memory and the controller emits them
+under the `bhopfix_hook` tracing target.
 
-Cache (fastdl lump checksums, downloaded map sidecars) lives in
-`~/.cache/bunnyhopfix/`.
+Fastdl cache data lives in `~/.cache/bunnyhopfix/` on Linux and
+`%LOCALAPPDATA%\bunnyhopfix\` on Windows.
 
 ## Warning
 
@@ -436,28 +447,29 @@ visibly break. That is the patch working as designed.
 
 ```sh
 cargo build --workspace --release
-# -> target/release/bunnyhopfix
-# -> target/release/libbhopfix.so
+# Linux:  target/release/bunnyhopfix + libbhopfix.so
+# Windows: target/release/bunnyhopfix.exe + bhopfix.dll
 
-cargo test --workspace      # pattern engine + resolver regression tests
+cargo test --workspace
 ```
 
-The resolver tests read the installed game if it is present and skip when it is
-not, so on a developer's machine they are a genuine "did a game update break the
-lookups?" check, and on a bare CI runner they pass without one.
+Resolver tests read the installed game when present and self-skip on bare CI
+runners. On a machine with CS:S, they are the regression check for a game
+update moving signatures or RTTI.
 
-Windows binaries are built natively in CI, and cross-built from Linux for the
-development loop with
+Windows is also cross-built from Linux with
 [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild):
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+cargo zigbuild --workspace --release --target x86_64-pc-windows-gnu
 ```
 
-Only dependency is `libc`. Everything else is plain
-`/proc/<pid>/{maps,mem,cmdline}`, sysfs (`/sys/class/leds/*::scrolllock`),
-and `dlopen`/`dlsym` for SDL2.
+Cargo dependencies are `libc` for Linux, `bzip2` for the self-contained
+Windows map decoder, and `sha1` for content-address verification on both
+platforms. Runtime fastdl/SourceJump requests use `curl` (the bundled
+`curl.exe` on current Windows); Linux compressed-map installs also require the
+system `bzip2` command.
 
 ## Releases and CI
 
@@ -470,9 +482,9 @@ commit convention and the full contributor loop.
 
 | workflow | when | what it does |
 |---|---|---|
-| `ci.yml` | every push to `dev` and `main`, every PR | `commits` (Conventional Commits check), `lint` (fmt + clippy `-D warnings`), `test`, `build-linux`, `build-windows`, `cross-windows` (the zigbuild cross-compile), `msrv` (1.88), `changelog-preview`. The two Windows jobs run on every push and PR so the port cannot rot, and their binaries are downloadable from the run's artifacts |
-| `release.yml` | every push to `main` | reads the version from `Cargo.toml`, exits cleanly if `v<version>` is already tagged, builds Linux, resolves the notes, tags, regenerates `CHANGELOG.md` and publishes the GitHub release |
-| `schedule.yml` | Mondays 05:00 UTC (`0 5 * * 1`), or manual | the toolchain canary and the `nightly` rolling build from `dev` (Linux **and** Windows) |
+| `ci.yml` | every push to `dev` and `main`, every PR | commit convention, fmt/clippy, tests, native Linux and Windows workspace builds, Windows zig cross-build, MSRV, and changelog preview |
+| `release.yml` | every push to `main` | resolves the workspace version, builds and packages both x86-64 platforms, generates checksums/notes, tags, and publishes |
+| `schedule.yml` | Mondays 05:00 UTC (`0 5 * * 1`), or manual | stable/beta/nightly canary plus rolling Linux and Windows builds from `dev` |
 
 **The changelog is derived from the commits.** `CHANGELOG.md` is generated by
 [git-cliff](https://git-cliff.org) from the history since the previous tag,
@@ -509,28 +521,19 @@ Release assets:
 | asset | contents |
 |---|---|
 | `bunnyhopfix-<tag>-x86_64-linux.tar.gz` | `bunnyhopfix`, `libbhopfix.so`, `README.md`, `LICENSE`, `verify-live.sh` |
-| `SHA256SUMS.txt` | checksums of the above |
+| `bunnyhopfix-<tag>-x86_64-windows.zip` | `bunnyhopfix.exe`, `bhopfix.dll`, `README.md`, `LICENSE` |
+| `SHA256SUMS.txt` | checksums of both archives |
 
-**Linux only, deliberately.** CI still builds Windows on every push, but
-nothing Windows is attached to a tag: the backend has never been run on real
-hardware (see [Platform support](#platform-support)), and this project does not
-ship what it has not verified. A Windows executable is published on the weekly
-`nightly` prerelease instead — a build labelled untested, downloadable without
-a GitHub account — and as a CI artifact on every run.
-
-Windows builds — CI, cross and nightly — link the CRT statically
-(`-C target-feature=+crt-static`), so `bunnyhopfix.exe` needs no VC++
-redistributable: one file, download and run.
+Windows release builds link the CRT statically
+(`-C target-feature=+crt-static`), so neither the controller nor hook requires a
+separate Visual C++ redistributable. The two files are still a required pair:
+the controller refuses to patch if the adjacent hook DLL is missing.
 
 **`nightly` refreshes weekly.** Every Monday, if `dev` has moved since the
-`nightly` tag, the tag is force-moved and the `nightly` prerelease is rebuilt
-from `dev` with the same asset names (so links stay stable). If nothing changed,
-the job skips cleanly rather than republishing an identical build. A nightly is
-CI-clean and nothing more — no live game has seen it. It carries **both** the
-Linux and the Windows build: CI artifacts need a signed-in GitHub account,
-a prerelease asset does not, so the Windows binary stays reachable while it is
-off the tagged releases. Its release body says outright that the Windows build
-has never run on real hardware.
+`nightly` tag, the tag is force-moved and the prerelease is rebuilt with stable
+asset names. If nothing changed, the job skips instead of republishing an
+identical build. A nightly is CI-clean, not live-game verified; use the newest
+tagged release for the human-verified build.
 
 **The canary reports toolchain rot even in a quiet week.** The same Monday run
 builds and tests the workspace on `stable`, `beta` and `nightly` rustc. A

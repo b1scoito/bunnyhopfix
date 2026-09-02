@@ -141,23 +141,27 @@ update move the lookups?" test. If you have the game, run `cargo test
 
 ### Windows changes
 
-CI compiles, links and cross-links the Windows binary, but GitHub runners do not
-run the game, so **no Windows behaviour can be verified by CI at all**. A PR
-touching `crates/bunnyhopfix/src/windows.rs` must say whether it was tested on a
-real install, and if it was not, say that too — "compiles only" is an acceptable
-answer, silently implying otherwise is not.
+CI compiles, links, tests, and cross-links the Windows controller/DLL pair, but
+GitHub runners cannot launch CS:S. A PR touching
+`crates/bunnyhopfix/src/windows*` or
+`crates/bhopfix-hook/src/windows*` must state whether it ran against a real
+native x64 install. If not, say "compile/resolver tests only"; never imply a
+live check.
 
-That is also why a tagged release ships no Windows asset. The byte signature is
-upstream C++ bunnyhopfix 1.0's production pattern and shipped to real users, so
-it is not a guess; everything around it — Toolhelp process enumeration, the
-WOW64 PEB command-line read, `VirtualProtectEx`/`WriteProcessMemory`, the
-Scroll Lock toggle and restore-on-exit — has never executed on Windows. The
-backend is still built by CI on every push and pull request, and the weekly
-`nightly` prerelease carries the binary, so nothing rots in the meantime.
-Publishing it is pending the maintainer's own first run against a real Windows
-CS:S install; once that happens the `windows` job goes back into `release.yml`
-and its assets back into the publish list, as a deliberate commit that updates
-`README.md`, `CHANGELOG.md` and this file too — not a hidden config toggle.
+The maintained Windows target is `cstrike_win64.exe`, not WOW64 or the retired
+32-bit `hl2.exe`. Live verification must start the game with `-insecure`, arm
+all seven feature bits, exercise the changed key/callback path, and end with:
+
+* both prediction sites restored to their exact original branch bytes;
+* F6's engine and `d3d9.dll` sites restored when fullscreen code changed;
+* no live vtable/code pointer still targeting `bhopfix.dll`;
+* `bhopfix.dll` absent from the process after the controller exits.
+
+The full x64 lifecycle was exercised against CS:S build 10897846 on
+2026-09-01: exact `-insecure` parsing, both prediction sites and toggles, every
+DLL resolver, raw `WM_INPUT` capture, F6/F7 toggles, callback drain, restoration,
+and verified DLL unload. CI guards compilation and pure resolver contracts; the
+live run remains mandatory after a game update or hook/lifecycle change.
 
 ## Cutting a release
 
@@ -170,32 +174,26 @@ Releases are driven entirely by the version in `Cargo.toml`:
    - reads the version from `Cargo.toml`;
    - **stops cleanly if the tag `v<version>` already exists**, so a `dev` → `main`
      merge without a version bump is a no-op rather than a duplicate release;
-   - builds Linux;
-   - resolves the release notes — the hand-written `## [<version>]` section if
-     there is one, otherwise git-cliff;
-   - creates and pushes the tag `v<version>`;
-   - commits the regenerated `CHANGELOG.md` back to `main`;
-   - publishes the release with the Linux tarball
-     `bunnyhopfix-<tag>-x86_64-linux.tar.gz` and `SHA256SUMS.txt`, and nothing
-     else — see [Windows changes](#windows-changes) for why no Windows asset is
-     attached.
+   - builds Linux and Windows x86-64 workspace artifacts;
+   - packages `bunnyhopfix` + `libbhopfix.so` and
+     `bunnyhopfix.exe` + `bhopfix.dll`;
+   - resolves the release notes — a hand-written `## [<version>]` section if
+     present, otherwise git-cliff;
+   - creates and pushes the tag, commits a generated changelog when needed, and
+     publishes both archives plus `SHA256SUMS.txt`.
 4. Nothing else is manual. **There is no `git tag` step for a normal release** —
    the tag is an output of the release, not its trigger.
 
 The other two workflows:
 
-- `ci.yml` — pushes to `dev` and `main`, and every PR. Jobs: `commits`
-  (convention check), `lint` (fmt + clippy `-D warnings`), `test`,
-  `build-linux`, `build-windows`, `cross-windows` (cargo-zigbuild), `msrv`
-  (1.88), `changelog-preview`. The Windows jobs run on every push and PR so the
-  port cannot rot; their binaries are downloadable from the run's artifacts.
+- `ci.yml` — pushes to `dev` and `main`, and every PR. Jobs: `commits`,
+  `lint`, `test`, native `build-linux`/`build-windows`, Windows
+  `cross-windows`, `msrv`, and `changelog-preview`. Windows build artifacts
+  always contain both `bunnyhopfix.exe` and `bhopfix.dll`.
 - `schedule.yml` — Mondays 05:00 UTC. A `stable`/`beta`/`nightly` rustc canary
-  that opens or updates a single `Weekly canary failed` issue, plus a `nightly`
-  rolling prerelease **built from `dev`** that only rebuilds when `dev` has moved
-  since the last `nightly` tag. A nightly is CI-clean and nothing more: no live
-  game has run it. It carries the Linux *and* Windows builds — unlike a CI
-  artifact, a prerelease asset downloads without a GitHub account, so the
-  Windows binary stays reachable while it is off the tagged releases.
+  reports toolchain drift, and a rolling prerelease is rebuilt from `dev` only
+  when that branch moved. Its Linux tarball and Windows controller/DLL zip are
+  CI-clean, not substitutes for the latest human-verified tagged release.
 
 ## What a good bug report contains
 

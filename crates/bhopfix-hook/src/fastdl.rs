@@ -47,6 +47,15 @@ fn cache_dir() -> PathBuf {
 }
 
 /// Listing of fastdl.me contents: "<sha1>,<lumpmd5hex>" per line.
+fn checksum_row(line: &str) -> Option<(&str, &str)> {
+    let (sha1, md5) = line.trim_end_matches('\r').split_once(',')?;
+    (sha1.len() == 40
+        && md5.len() == 32
+        && sha1.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && md5.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    .then_some((sha1, md5))
+}
+
 fn lump_checksums_csv() -> Option<String> {
     let path = cache_dir().join("lump_checksums.csv");
     let stale = std::fs::metadata(&path)
@@ -58,31 +67,44 @@ fn lump_checksums_csv() -> Option<String> {
         log!("downloading lump_checksums.csv from fastdl.me (~4MB)...");
         let tmp = cache_dir().join("lump_checksums.csv.part");
         let ok = std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "30", "-o"])
+            .args([
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--tlsv1.2",
+                "--max-time",
+                "30",
+                "--max-filesize",
+                "33554432",
+                "-o",
+            ])
             .arg(&tmp)
             .arg("https://venus.fastdl.me/lump_checksums.csv")
             .status()
             .map(|s| s.success())
             .unwrap_or(false);
-        if ok {
+        let valid = ok
+            && std::fs::read_to_string(&tmp)
+                .is_ok_and(|csv| csv.lines().any(|line| checksum_row(line).is_some()));
+        if valid {
             let _ = std::fs::rename(&tmp, &path);
         } else {
             let _ = std::fs::remove_file(&tmp);
-            log!("fastdl.me csv download failed");
+            log!("fastdl.me csv download failed or returned invalid data");
         }
     }
-    std::fs::read_to_string(&path).ok()
+    std::fs::read_to_string(&path)
+        .ok()
+        .filter(|csv| csv.lines().any(|line| checksum_row(line).is_some()))
 }
 
 fn lookup_md5<'a>(csv: &'a str, md5hex: &str) -> Option<&'a str> {
+    if md5hex.len() != 32 || !md5hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
     csv.lines().find_map(|line| {
-        let line = line.trim_end_matches('\r');
-        let (sha1, md5) = line.split_once(',')?;
-        if md5.eq_ignore_ascii_case(md5hex) {
-            Some(sha1)
-        } else {
-            None
-        }
+        let (sha1, md5) = checksum_row(line)?;
+        md5.eq_ignore_ascii_case(md5hex).then_some(sha1)
     })
 }
 
@@ -222,7 +244,17 @@ fn ensure_map(mapname: &str, sha1: &str) -> bool {
     // fastdl.me's 404, so the realistic case is a few seconds.
     let bz2 = maps_dir.join(format!("{mapname}.bsp.bz2.part"));
     let mut ok = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "20", "-o"])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "--max-time",
+            "20",
+            "--max-filesize",
+            "1073741824",
+            "-o",
+        ])
         .arg(&bz2)
         .arg(format!("https://mainr2.fastdl.me/hashed/{sha1}.bsp.bz2"))
         .status()
@@ -239,7 +271,17 @@ fn ensure_map(mapname: &str, sha1: &str) -> bool {
         // legacy endpoint: uncompressed .bsp (currently 404s, but kept in
         // case the endpoints shuffle again). curl -f exits fast on 404.
         ok = std::process::Command::new("curl")
-            .args(["-fsSL", "--max-time", "8", "-o"])
+            .args([
+                "-fsSL",
+                "--proto",
+                "=https",
+                "--tlsv1.2",
+                "--max-time",
+                "8",
+                "--max-filesize",
+                "1073741824",
+                "-o",
+            ])
             .arg(&part)
             .arg(format!("https://main.fastdl.me/hashed/{sha1}.bsp"))
             .status()
@@ -262,6 +304,11 @@ fn ensure_map(mapname: &str, sha1: &str) -> bool {
     if !magic_ok {
         let _ = std::fs::remove_file(&part);
         log!("downloaded file is not a BSP; refusing to install");
+        return false;
+    }
+    if !crate::file_matches_sha1(&part, sha1) {
+        let _ = std::fs::remove_file(&part);
+        log!("downloaded BSP SHA-1 differs from fastdl.me; refusing to install");
         return false;
     }
     match std::fs::rename(&part, &target) {
@@ -553,7 +600,7 @@ pub(crate) unsafe fn install(engine: &elf::Module, engine_base: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_target;
+    use super::{checksum_row, lookup_md5, resolve_target};
 
     #[test]
     fn process_server_info_resolves_and_yields_the_md5_offset() {
@@ -571,5 +618,19 @@ mod tests {
             md5_off > 0 && md5_off < 0x400,
             "implausible msg MD5 offset 0x{md5_off:x}"
         );
+    }
+
+    #[test]
+    fn checksum_rows_reject_untrusted_hashes() {
+        let csv = concat!(
+            "sha1,lump_md5_checksum\r\n",
+            "0123456789abcdef0123456789abcdef01234567,ABCDEF0123456789ABCDEF0123456789\r\n",
+            "../map,abcdef0123456789abcdef0123456789\n"
+        );
+        assert_eq!(
+            lookup_md5(csv, "abcdef0123456789abcdef0123456789"),
+            Some("0123456789abcdef0123456789abcdef01234567")
+        );
+        assert!(checksum_row("../map,abcdef0123456789abcdef0123456789").is_none());
     }
 }

@@ -1,11 +1,11 @@
-//! `libbhopfix.so` — the injected half of bunnyhopfix.
+//! Injected hook library for bunnyhopfix.
 //!
-//! LD_PRELOAD hook library. The patcher binary fixes jump prediction from the
-//! outside; this library lives inside the game process and arms everything that
-//! has to be in there: momentum-mod style `m_rawinput 2` (the rawinput2
-//! feature, ported from the RawInput2 half of rtldg/RawInput2BunnyhopAPE on
-//! Windows), the viewpunch remover, the fastdl.me map hijack and the engine
-//! console glue.
+//! The patcher binary fixes jump prediction from the outside; this library
+//! lives inside the game process and arms everything that must run there:
+//! momentum-mod style `m_rawinput 2`, the viewpunch remover, the fastdl.me map
+//! hijack, SourceJump records, and engine console/download glue. Linux loads
+//! `libbhopfix.so` with `LD_PRELOAD`; Windows injects `bhopfix.dll` with
+//! `LoadLibraryW` and starts it through an explicit exported entry point.
 //!
 //! What rawinput2 does: mouse input is sampled so it "lines up with the
 //! tickrate properly without needing a specific framerate" — raw deltas are
@@ -30,20 +30,26 @@
 //! resolved from the module files by name at startup (see `bhopfix_core::elf`),
 //! and every hook validates its slot before writing.
 //!
-//! Hooks are installed by rewriting vtable pointers (no inline patching).
-//! Requires -insecure, same policy as the patcher.
+//! Linux uses validated GOT/vtable-pointer rewrites; Windows uses validated
+//! vtable-pointer and inline hooks. Requires `-insecure` on both platforms.
 
-// This is an LD_PRELOAD library: it reads /proc/self/{maps,mem}, parses ELF and
-// rewrites vtables in-process, none of which has a Windows analogue. The
-// Windows port is the patcher only, so on Windows this crate is empty.
-#![cfg(unix)]
+// Linux enters through an `.init_array` constructor after LD_PRELOAD. Windows
+// enters through the exported `bhopfix_start` function after LoadLibraryW.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(unix)]
 use bhopfix_core::elf;
 
 // ---------------------------------------------------------------------------
-// logging (uses libc::write to stderr)
+// injected logging
+//
+// Unix writes directly because callbacks run on game threads and the preload
+// library remains mapped for process life. The unloadable Windows DLL instead
+// publishes typed records through shared memory; the owning controller maps
+// those records into `tracing`. Keeping tracing's process-global subscriber and
+// callsite registry out of an unloadable DLL prevents references into unmapped
+// code after a clean FreeLibrary.
 // ---------------------------------------------------------------------------
 
 /// `BHOPFIX_DEBUG` was set: emit resolver details and the periodic sampling
@@ -55,6 +61,7 @@ static DEBUG: AtomicBool = AtomicBool::new(false);
 /// `libc::write` rather than `eprintln!`: we run on the game's own threads,
 /// inside its address space, sometimes mid-frame — the one thing we must not do
 /// is take a lock the game knows nothing about.
+#[cfg(unix)]
 pub(crate) fn emit(msg: &str) {
     const PREFIX: &[u8] = b"[bhopfix] ";
     unsafe {
@@ -64,15 +71,65 @@ pub(crate) fn emit(msg: &str) {
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn emit(msg: &str) {
+    windows::emit(msg);
+}
+
 /// Whether `dbglog!` output is enabled.
 pub(crate) fn debug_on() -> bool {
     DEBUG.load(Ordering::Relaxed)
+}
+pub(crate) fn queue_engine_command(command: impl Into<String>) {
+    #[cfg(unix)]
+    engine::queue_cmd(command);
+    #[cfg(windows)]
+    windows::queue_command(command);
+}
+fn curl_program() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
+            .join(r"System32\curl.exe")
+    }
+    #[cfg(unix)]
+    {
+        std::path::PathBuf::from("curl")
+    }
+}
+
+/// Stream a downloaded map through SHA-1 and compare it with the content
+/// address supplied by fastdl.me.
+pub(crate) fn file_matches_sha1(path: &std::path::Path, expected: &str) -> bool {
+    use std::io::Read as _;
+
+    use sha1::{Digest as _, Sha1};
+
+    if expected.len() != 40 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut digest = Sha1::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(length) => digest.update(&buffer[..length]),
+            Err(_) => return false,
+        }
+    }
+    format!("{:x}", digest.finalize()).eq_ignore_ascii_case(expected)
 }
 
 macro_rules! log {
     ($($t:tt)*) => { $crate::emit(&std::format!($($t)*)) };
 }
 
+#[cfg(unix)]
 macro_rules! dbglog {
     ($($t:tt)*) => {{
         if $crate::debug_on() {
@@ -83,18 +140,27 @@ macro_rules! dbglog {
 
 // NB: log!/dbglog! (macro_rules, defined above) are in textual scope for these
 // submodules because they are declared after the macro definitions.
+#[cfg(unix)]
 mod engine;
+#[cfg(unix)]
 mod fastdl;
+#[cfg(unix)]
 mod proc;
+#[cfg(unix)]
 mod rawinput;
 mod sourcejump;
+#[cfg(unix)]
 mod viewpunch;
+#[cfg(unix)]
 mod vtable;
+#[cfg(windows)]
+mod windows;
 
 // ---------------------------------------------------------------------------
 // LD_PRELOAD entry point
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 extern "C" fn bhopfix_init() {
     DEBUG.store(
         std::env::var_os("BHOPFIX_DEBUG").is_some(),
@@ -111,6 +177,7 @@ extern "C" fn bhopfix_init() {
     std::thread::spawn(init_thread);
 }
 
+#[cfg(unix)]
 #[used]
 #[unsafe(link_section = ".init_array")]
 static INIT: extern "C" fn() = bhopfix_init;
@@ -120,6 +187,7 @@ static INIT: extern "C" fn() = bhopfix_init;
 /// Runs on its own thread: the engine maps client.so/launcher.so/engine.so long
 /// after the loader has run our `.init_array` entry, and nothing here may block
 /// the process from starting.
+#[cfg(unix)]
 fn init_thread() {
     if !proc::has_insecure() {
         log!("game was not started with -insecure; NOT installing hooks");
@@ -318,7 +386,7 @@ fn init_thread() {
 // when the 2026-08-24 build silently turned these hooks into a crash.
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod testutil {
     use bhopfix_core::elf;
 

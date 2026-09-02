@@ -13,6 +13,44 @@ There is no "Unreleased" section: work that has not shipped yet is rendered by
 CI into the *pending release notes* job summary of every push to `dev` and
 every pull request.
 
+## [2.1.0] - 2026-09-02
+
+This release makes the verified native x86-64 Windows implementation a
+first-class peer of the Linux build and ships both platforms from one release.
+
+### Added
+
+- A native `bhopfix.dll` implementing rawinput2, viewpunch removal, fastdl map
+  interception, engine console/download integration, fullscreen preservation,
+  SourceJump records, and optional automatic demos for Windows x86-64 CS:S.
+- Reversible F5 prediction, F6 fullscreen-preservation, and F7 viewpunch
+  controls, with active-callback draining before DLL unload.
+- Structured controller diagnostics through `tracing`, including timestamps,
+  levels, targets, per-game PID context, `BHOPFIX_LOG` filtering, and typed
+  Windows hook records.
+- A Windows release package containing the statically linked controller and
+  hook DLL alongside the existing Linux controller/preload-library tarball.
+
+### Changed
+
+- Windows now resolves every prediction and feature target from unique live PE
+  signatures, exports, RTTI, vtables, and decoded instruction operands. It
+  validates exact original bytes and the native x86-64 `-insecure` target before
+  writing.
+- The controller/DLL shared-memory protocol is version 5. Log records carry
+  explicit severity, malformed levels are rejected, and ring overruns are
+  reported instead of silently disappearing.
+- Windows CI, cross-build, weekly, and release jobs now build and verify both
+  `bunnyhopfix.exe` and `bhopfix.dll`.
+
+### Fixed
+
+- Thread creation and exit during Windows patch transactions no longer causes
+  a transient `SuspendThread` access-denied failure. Acquisition retries from a
+  fully resumed state while persistent or unknown failures remain fail-closed.
+- Hook startup rollback and normal shutdown preserve the DLL whenever cleanup
+  cannot be proven safe, preventing execution through freed code.
+
 ## [2.0.0] - 2026-08-31
 
 **bunnyhopfix 2.0.0 is a full Rust rewrite of the C++ `bunnyhopfix`, and

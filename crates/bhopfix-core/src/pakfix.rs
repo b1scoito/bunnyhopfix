@@ -200,10 +200,14 @@ fn extract_stored(
     lower: &[u8],
     download_dir: &Path,
 ) -> io::Result<bool> {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-
-    let dest: PathBuf = download_dir.join(OsStr::from_bytes(lower));
+    #[cfg(unix)]
+    let dest: PathBuf = {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        download_dir.join(OsStr::from_bytes(lower))
+    };
+    #[cfg(not(unix))]
+    let dest: PathBuf = download_dir.join(String::from_utf8_lossy(lower).as_ref());
     if dest.exists() {
         return Ok(false);
     }
