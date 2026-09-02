@@ -4,7 +4,7 @@ resolver = "3"
 
 # Shared metadata: the three crates are one product and always ship together.
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-3.0-only"
@@ -16,6 +16,9 @@ categories = ["games"]
 [workspace.dependencies]
 bhopfix-core = { path = "crates/bhopfix-core" }
 libc = "0.2"
+sha1 = "0.10.6"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "env-filter", "fmt"] }
 
 # This tool writes into another process's memory: correctness lints are not
 # optional, and an unsafe operation must say so at the point it happens rather

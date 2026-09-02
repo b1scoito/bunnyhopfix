@@ -1,15 +1,18 @@
 //! sourcejump — global CS:S bhop world-record lookup.
 //!
 //! On connect (from the ProcessServerInfo hook, which already has the map
-//! name) we ask sourcejump.net for the map's records and print the WR + a few
-//! top times to the tool's terminal log. Read-only, best-effort, and fully
-//! off the engine thread so a slow API never stalls a connect.
+//! name) we ask sourcejump.net for the map's records and print the WR plus a few
+//! top times. The fetch is read-only, best-effort, bounded, and fully off the
+//! engine thread so a slow API never stalls a connect.
 //!
-//! Output goes to stderr (where the tool's other `[bhopfix]` logs go and the
-//! user is already watching). Printing into the in-game console would need an
-//! engine command-buffer hook we don't have yet.
+//! Output goes to the tool log and, when the validated `ClientCmd` integration
+//! is ready, is queued back to the engine thread for the in-game console.
 
 use std::sync::Mutex;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::thread::JoinHandle;
 
 /// The community-shared read-only API key (same one rtldg/wrsj ships).
 const PUBLIC_API_KEY: &str = "SJPublicAPIKey";
@@ -33,6 +36,10 @@ static STATE: Mutex<State> = Mutex::new(State {
     inflight: false,
     pending: None,
 });
+#[cfg(windows)]
+static STOP: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static WORKER: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// Fire off a background WR lookup for `mapname`. Returns immediately.
 pub fn show_wr(mapname: &str) {
@@ -44,26 +51,97 @@ pub fn show_wr(mapname: &str) {
     {
         return; // never interpolate anything odd into a URL/subprocess
     }
-    let Ok(mut st) = STATE.lock() else { return };
-    if st.shown == mapname {
-        return; // already displayed this map
+
+    #[cfg(windows)]
+    {
+        let Ok(mut worker) = WORKER.lock() else {
+            return;
+        };
+        if STOP.load(Ordering::Acquire) {
+            return;
+        }
+        if worker.as_ref().is_some_and(JoinHandle::is_finished)
+            && let Some(done) = worker.take()
+        {
+            let _ = done.join();
+        }
+        if !schedule(mapname) {
+            return;
+        }
+        match std::thread::Builder::new()
+            .name("bhopfix-sourcejump".into())
+            .spawn(worker_main)
+        {
+            Ok(handle) => *worker = Some(handle),
+            Err(_) => reset_inflight(),
+        }
     }
-    st.pending = Some(mapname.to_string()); // newest request wins
+
+    #[cfg(unix)]
+    {
+        if !schedule(mapname) {
+            return;
+        }
+        if std::thread::Builder::new().spawn(worker_main).is_err() {
+            reset_inflight();
+        }
+    }
+}
+
+fn schedule(mapname: &str) -> bool {
+    let Ok(mut st) = STATE.lock() else {
+        return false;
+    };
+    if st.shown == mapname {
+        return false;
+    }
+    st.pending = Some(mapname.to_string());
     if st.inflight {
-        return; // the running worker will pick it up
+        return false;
     }
     st.inflight = true;
-    drop(st);
-    if std::thread::Builder::new().spawn(worker).is_err()
-        && let Ok(mut st) = STATE.lock()
-    {
+    true
+}
+
+fn reset_inflight() {
+    if let Ok(mut st) = STATE.lock() {
         st.inflight = false;
     }
 }
 
+#[cfg(windows)]
+pub(crate) fn start() {
+    STOP.store(false, Ordering::Release);
+}
+
+#[cfg(windows)]
+pub(crate) fn shutdown() {
+    let handle = {
+        let Ok(mut worker) = WORKER.lock() else {
+            return;
+        };
+        STOP.store(true, Ordering::Release);
+        if let Ok(mut state) = STATE.lock() {
+            state.pending = None;
+        }
+        worker.take()
+    };
+    if let Some(handle) = handle {
+        let _ = handle.join();
+    }
+    if let Ok(mut state) = STATE.lock() {
+        state.inflight = false;
+        state.pending = None;
+    }
+}
+
 /// Drains the pending map(s), newest-first, one fetch at a time.
-fn worker() {
+fn worker_main() {
     loop {
+        #[cfg(windows)]
+        if STOP.load(Ordering::Acquire) {
+            return;
+        }
         let map = {
             let Ok(mut st) = STATE.lock() else { return };
             match st.pending.take() {
@@ -86,12 +164,21 @@ fn worker() {
 
 fn fetch_and_print(mapname: &str) {
     let url = format!("{API_BASE}{mapname}");
-    let out = std::process::Command::new("curl")
+    let mut command = std::process::Command::new(crate::curl_program());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = command
         // --max-filesize bounds the download when the server sends a
         // Content-Length (SourceJump does); the parse cap below is the
         // in-process backstop.
         .args([
             "-fsS",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
             "--max-time",
             "10",
             "--max-filesize",
@@ -120,7 +207,7 @@ fn fetch_and_print(mapname: &str) {
     log!("sourcejump WRs for {mapname}:");
     // Also echo into the game console (if the ClientCmd interface armed). This
     // runs on a background thread, so queue_cmd marshals to the main thread.
-    crate::engine::queue_cmd(format!("echo [SourceJump] {mapname}:"));
+    crate::queue_engine_command(format!("echo [SourceJump] {mapname}:"));
     for (i, r) in rows.iter().enumerate() {
         let tag = if i == 0 { "WR" } else { "  " };
         // e.g. "  WR 5:58.330  Jehoshaphat  (sync 93.8%, 614 strafes)"
@@ -140,7 +227,7 @@ fn fetch_and_print(mapname: &str) {
                 }
             })
             .collect();
-        crate::engine::queue_cmd(format!("echo {}", safe.trim()));
+        crate::queue_engine_command(format!("echo {}", safe.trim()));
     }
 }
 
@@ -265,5 +352,35 @@ fn sanitize(s: &str) -> String {
         "?".into()
     } else {
         cleaned
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_sourcejump_record_rows_in_api_order() {
+        let json = r#"[
+            {"name":"mukez","time":"4:33.732","sync":96.022,"strafes":445},
+            {"name":"hystereo","time":"4:36.526","sync":95.205,"strafes":517}
+        ]"#;
+        let rows = parse_records(json, 3);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "mukez");
+        assert_eq!(rows[0].time, "4:33.732");
+        assert!((rows[0].sync - 96.022).abs() < f64::EPSILON);
+        assert_eq!(rows[0].strafes, 445);
+        assert_eq!(rows[1].name, "hystereo");
+    }
+
+    #[test]
+    fn sanitizes_untrusted_player_names() {
+        assert_eq!(sanitize("\u{1b}[31mrunner\n"), "[31mrunner");
+        assert_eq!(sanitize("\n\r\t"), "?");
+        assert_eq!(
+            sanitize("abcdefghijklmnopqrstuvwxyz"),
+            "abcdefghijklmnopqrstuvwx"
+        );
     }
 }

@@ -24,23 +24,28 @@
 //! run with `-insecure`, because this writes into game memory.
 //!
 //! Platform split:
-//!   * Linux — full implementation: prediction patcher plus `libbhopfix.so`
-//!     (LD_PRELOAD) for momentum-mod style `m_rawinput 2`, viewpunch removal,
-//!     fastdl map hijack and engine console glue.
-//!   * Windows — barebones: the prediction patcher only.
+//!   * Linux x86-64 — launcher, prediction patcher, and an LD_PRELOAD hook
+//!     library for rawinput2, viewpunch removal, fastdl, SourceJump, and engine
+//!     integration.
+//!   * Windows x86-64 — native attach-time prediction patcher plus an injected
+//!     DLL implementing the same common feature set and the Windows fullscreen
+//!     preservation toggle.
 
 #[cfg(unix)]
 mod linux;
+mod logging;
 
 #[cfg(windows)]
 mod windows;
 
 #[cfg(unix)]
 fn main() {
+    logging::init();
     linux::main();
 }
 
 #[cfg(windows)]
 fn main() {
+    logging::init();
     windows::main();
 }

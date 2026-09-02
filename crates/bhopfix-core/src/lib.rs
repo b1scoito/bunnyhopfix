@@ -5,18 +5,18 @@
 //! game right now?* — without ever naming an address:
 //!
 //! * [`sig`] finds code by what its instructions look like,
-//! * [`elf`] finds classes and their virtuals through the RTTI and relocations
-//!   Valve ships in the Linux binaries,
-//! * [`pakfix`] is the odd one out: it repairs map pakfiles on disk rather
-//!   than in memory, and both halves need it because a map can arrive before
-//!   the game starts or while it is running.
+//! * [`elf`] finds classes and virtuals in Linux modules,
+//! * [`pe`] finds exports and MSVC RTTI in Windows modules,
+//! * [`pakfix`] repairs map pakfiles on disk rather than in memory.
 //!
 //! Nothing in this crate writes to another process. It reads, decodes and
 //! locates; the callers decide what to do with the answer.
 
 pub mod sig;
 
+#[cfg(windows)]
+pub mod control;
 #[cfg(unix)]
 pub mod elf;
-#[cfg(unix)]
 pub mod pakfix;
+pub mod pe;

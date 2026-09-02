@@ -128,11 +128,8 @@ jobs:
   build-windows:
     name: build (windows)
     runs-on: windows-latest
-    # Statically link the CRT so `bunnyhopfix.exe` is a true drop-and-run
-    # download with no VC++ redistributable dependency — the single-file asset
-    # users know from the C++ 1.0 release. The tool has no C dependencies, so
-    # this costs nothing. It MUST match the release workflow's Windows jobs:
-    # this job exists to catch a break in exactly that build. Do not remove.
+    # Statically link the CRT so the controller/DLL pair needs no VC++
+    # redistributable. This MUST match release.yml and schedule.yml.
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
@@ -142,20 +139,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Only the `bunnyhopfix` bin. The hook crate is an LD_PRELOAD cdylib that
-      # pokes at ELF/GOT/RTTI through /proc/self/{maps,mem}; it is `#![cfg(unix)]`
-      # and is not part of a Windows release.
-      - name: Build
-        run: cargo build -p bunnyhopfix --release
+      - name: Test
+        run: cargo test --workspace
 
-      - name: Check artifact
+      - name: Build
+        run: cargo build --workspace --release
+
+      - name: Check artifacts
         shell: bash
-        run: test -f target/release/bunnyhopfix.exe
+        run: |
+          test -f target/release/bunnyhopfix.exe
+          test -f target/release/bhopfix.dll
 
       - uses: actions/upload-artifact@v4
         with:
           name: bunnyhopfix-windows
-          path: target/release/bunnyhopfix.exe
+          path: |
+            target/release/bunnyhopfix.exe
+            target/release/bhopfix.dll
           if-no-files-found: error
 
   cross-windows:
@@ -191,7 +192,12 @@ jobs:
         run: rustup target add x86_64-pc-windows-gnu
 
       - name: Cross-build
-        run: cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+        run: cargo zigbuild --workspace --release --target x86_64-pc-windows-gnu
+
+      - name: Check cross artifacts
+        run: |
+          test -f target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe
+          test -f target/x86_64-pc-windows-gnu/release/bhopfix.dll
 
   msrv:
     name: msrv (1.88)

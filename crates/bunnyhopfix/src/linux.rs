@@ -44,6 +44,7 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 use bhopfix_core::sig::Sig;
+use tracing::{error, info, warn};
 
 #[rustfmt::skip]
 static SIGS: &[Sig] = &[
@@ -61,39 +62,35 @@ static SIGS: &[Sig] = &[
         pat: "8B 50 58  85 D2  75 ??  49 8B 44 24 10  F6 40 28 02  0F 85 ?? FF FF FF",
         at: 16, len: 6,
     },
-    Sig {
-        name: "linux32 CheckJumpButton #1",
-        // same logic, 32-bit encoding (m_vecPunchAngle-era layout: +0xfa4)
-        pat: "80 B8 A4 0F 00 00 00  0F 85 ?? FF FF FF  8B 53 08  F6 42 28 02  0F 85 ?? FF FF FF",
-        at: 20, len: 6,
-    },
-    Sig {
-        name: "linux32 CheckJumpButton #2",
-        pat: "8B 50 30  85 D2  75 ??  8B 43 08  F6 40 28 02  0F 85 ?? FF FF FF",
-        at: 14, len: 6,
-    },
 ];
 
 const NOP: u8 = 0x90;
 
-/// Scan `buf` for every signature. Returns (sig index, offset in buf) hits.
-fn scan(buf: &[u8]) -> Vec<(usize, usize)> {
-    let mut hits = Vec::new();
-    for (si, s) in SIGS.iter().enumerate() {
-        match s.pattern() {
-            Some(p) => hits.extend(p.find_all(buf).into_iter().map(|off| (si, off))),
-            // a malformed literal is a bug in this table, not a game update
-            None => eprintln!("[!] signature {:?} is malformed; skipping", s.name),
+/// Resolve exactly one site for each x86-64 implementation.
+fn scan(buf: &[u8]) -> Result<Vec<(usize, usize)>, String> {
+    let mut hits = Vec::with_capacity(SIGS.len());
+    for (index, signature) in SIGS.iter().enumerate() {
+        let pattern = signature
+            .pattern()
+            .ok_or_else(|| format!("signature {:?} is malformed", signature.name))?;
+        let matches = pattern.find_all(buf);
+        if matches.len() != 1 {
+            return Err(format!(
+                "{} matched {} times; expected exactly one",
+                signature.name,
+                matches.len()
+            ));
         }
+        hits.push((index, matches[0]));
     }
-    hits
+    Ok(hits)
 }
 
 // ---------------------------------------------------------------------------
 // /proc helpers
 // ---------------------------------------------------------------------------
 
-const GAME_COMMS: [&str; 3] = ["cstrike_linux64", "cstrike_linux", "hl2_linux"];
+const GAME_COMMS: [&str; 1] = ["cstrike_linux64"];
 
 /// True if `pid` currently names a CS:S game process (guards PID reuse).
 fn pid_is_game(pid: u32) -> bool {
@@ -199,7 +196,7 @@ fn cmdline_has_insecure(pid: u32) -> bool {
 fn read_mem(pid: u32, addr: u64, len: usize) -> std::io::Result<Vec<u8>> {
     let mem = File::open(format!("/proc/{pid}/mem"))?;
     let mut buf = vec![0u8; len];
-    mem.read_at(&mut buf, addr)?;
+    mem.read_exact_at(&mut buf, addr)?;
     Ok(buf)
 }
 
@@ -208,48 +205,92 @@ fn write_mem(pid: u32, addr: u64, data: &[u8]) -> std::io::Result<()> {
         .read(true)
         .write(true)
         .open(format!("/proc/{pid}/mem"))?;
-    mem.write_at(data, addr)?;
+    mem.write_all_at(data, addr)?;
+    let current = read_mem(pid, addr, data.len())?;
+    if current != data {
+        return Err(std::io::Error::other("memory write did not verify"));
+    }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// ptrace wrapper (stop the main thread while patching, then resume)
+// ptrace wrapper (stop every target thread while patching, then resume)
 // ---------------------------------------------------------------------------
 
+fn task_ids(pid: u32) -> std::io::Result<Vec<libc::pid_t>> {
+    let mut tids = Vec::new();
+    for entry in fs::read_dir(format!("/proc/{pid}/task"))? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Ok(tid) = name.parse::<libc::pid_t>() {
+            tids.push(tid);
+        }
+    }
+    tids.sort_unstable();
+    Ok(tids)
+}
+
 struct PtraceGuard {
-    pid: u32,
-    attached: bool,
+    tids: Vec<libc::pid_t>,
 }
 
 impl PtraceGuard {
-    fn attach(pid: u32) -> Option<Self> {
-        unsafe {
-            if libc::ptrace(
-                libc::PTRACE_ATTACH,
-                pid as libc::pid_t,
-                std::ptr::null_mut::<c_void>(),
-                std::ptr::null_mut::<c_void>(),
-            ) < 0
-            {
-                return None;
+    fn attach(pid: u32) -> Result<Self, String> {
+        let mut guard = Self { tids: Vec::new() };
+        for _ in 0..16 {
+            for tid in task_ids(pid).map_err(|error| format!("listing target threads: {error}"))? {
+                if guard.tids.contains(&tid) {
+                    continue;
+                }
+                let attached = unsafe {
+                    libc::ptrace(
+                        libc::PTRACE_ATTACH,
+                        tid,
+                        std::ptr::null_mut::<c_void>(),
+                        std::ptr::null_mut::<c_void>(),
+                    )
+                };
+                if attached < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::ESRCH) {
+                        continue;
+                    }
+                    return Err(format!("ptrace attach to thread {tid}: {error}"));
+                }
+                guard.tids.push(tid);
+
+                let mut status = 0;
+                let waited = unsafe { libc::waitpid(tid, &raw mut status, libc::__WALL) };
+                if waited != tid {
+                    return Err(format!(
+                        "waiting for thread {tid} to stop: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                if !libc::WIFSTOPPED(status) {
+                    return Err(format!("thread {tid} did not enter ptrace-stop"));
+                }
             }
-            let mut status: libc::c_int = 0;
-            libc::waitpid(pid as libc::pid_t, &mut status, 0);
+
+            let current =
+                task_ids(pid).map_err(|error| format!("rechecking target threads: {error}"))?;
+            if current.iter().all(|tid| guard.tids.contains(tid)) {
+                return Ok(guard);
+            }
         }
-        Some(Self {
-            pid,
-            attached: true,
-        })
+        Err("target kept creating threads while entering patch stop".into())
     }
 }
 
 impl Drop for PtraceGuard {
     fn drop(&mut self) {
-        if self.attached {
+        for &tid in self.tids.iter().rev() {
             unsafe {
                 libc::ptrace(
                     libc::PTRACE_DETACH,
-                    self.pid as libc::pid_t,
+                    tid,
                     std::ptr::null_mut::<c_void>(),
                     std::ptr::null_mut::<c_void>(),
                 );
@@ -265,8 +306,8 @@ impl Drop for PtraceGuard {
 struct PatchSite {
     name: &'static str,
     addr: u64,
-    len: usize,
     original: Vec<u8>,
+    replacement: Vec<u8>,
 }
 
 struct Patcher {
@@ -282,20 +323,17 @@ impl Patcher {
             .ok_or_else(|| "client.so not found in process maps yet".to_string())?;
         let buf = read_mem(pid, base, size as usize)
             .map_err(|e| format!("reading client.so memory: {e}"))?;
-        let hits = scan(&buf);
-        if hits.is_empty() {
-            return Err("no signatures matched (game updated? already patched?)".into());
-        }
-        let mut sites = Vec::new();
-        for (si, off) in hits {
-            let s = &SIGS[si];
-            let addr = base + off as u64 + s.at as u64;
-            let original =
-                read_mem(pid, addr, s.len).map_err(|e| format!("reading original bytes: {e}"))?;
+        let hits = scan(&buf)?;
+        let mut sites = Vec::with_capacity(hits.len());
+        for (signature_index, offset) in hits {
+            let signature = &SIGS[signature_index];
+            let addr = base + offset as u64 + signature.at as u64;
+            let original = read_mem(pid, addr, signature.len)
+                .map_err(|error| format!("reading original bytes: {error}"))?;
             sites.push(PatchSite {
-                name: s.name,
+                name: signature.name,
                 addr,
-                len: s.len,
+                replacement: vec![NOP; original.len()],
                 original,
             });
         }
@@ -306,45 +344,72 @@ impl Patcher {
         })
     }
 
-    fn apply(&self, nops: bool) -> std::io::Result<()> {
-        // Guard against PID reuse: never write to /proc/<pid>/mem unless the
-        // pid still names the game (it could have exited and the number been
-        // recycled to an unrelated process between our checks).
+    fn apply(&self, enabled: bool) -> Result<(), String> {
         if !pid_is_game(self.pid) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "target pid is no longer a CS:S process",
-            ));
+            return Err("target pid is no longer a CS:S x86-64 process".into());
         }
-        let _guard = PtraceGuard::attach(self.pid); // best effort; write works without it if permitted
+        let _guard = PtraceGuard::attach(self.pid)?;
+
         for site in &self.sites {
-            if nops {
-                write_mem(self.pid, site.addr, &vec![NOP; site.len])?;
+            let expected = if enabled {
+                &site.original
             } else {
-                write_mem(self.pid, site.addr, &site.original)?;
+                &site.replacement
+            };
+            let current = read_mem(self.pid, site.addr, expected.len())
+                .map_err(|error| format!("reading {}: {error}", site.name))?;
+            if current != *expected {
+                return Err(format!(
+                    "{} @ 0x{:x} is not in the expected prior state",
+                    site.name, site.addr
+                ));
+            }
+        }
+
+        for (index, site) in self.sites.iter().enumerate() {
+            let desired = if enabled {
+                &site.replacement
+            } else {
+                &site.original
+            };
+            if let Err(error) = write_mem(self.pid, site.addr, desired) {
+                let mut rollback_errors = Vec::new();
+                for rollback in self.sites[..=index].iter().rev() {
+                    let prior = if enabled {
+                        &rollback.original
+                    } else {
+                        &rollback.replacement
+                    };
+                    if let Err(rollback_error) = write_mem(self.pid, rollback.addr, prior) {
+                        rollback_errors.push(format!("{}: {rollback_error}", rollback.name));
+                    }
+                }
+                let rollback = if rollback_errors.is_empty() {
+                    "transaction rolled back".to_string()
+                } else {
+                    format!("rollback failed: {}", rollback_errors.join("; "))
+                };
+                return Err(format!(
+                    "writing {} @ 0x{:x}: {error}; {rollback}",
+                    site.name, site.addr
+                ));
             }
         }
         Ok(())
     }
 
-    fn enable(&mut self) {
-        match self.apply(true) {
-            Ok(()) => {
-                self.enabled = true;
-                print_status(true, &self.sites);
-            }
-            Err(e) => eprintln!("[!] failed to patch: {e}"),
-        }
+    fn enable(&mut self) -> Result<(), String> {
+        self.apply(true)?;
+        self.enabled = true;
+        print_status(true, &self.sites);
+        Ok(())
     }
 
-    fn disable(&mut self) {
-        match self.apply(false) {
-            Ok(()) => {
-                self.enabled = false;
-                print_status(false, &self.sites);
-            }
-            Err(e) => eprintln!("[!] failed to restore: {e}"),
-        }
+    fn disable(&mut self) -> Result<(), String> {
+        self.apply(false)?;
+        self.enabled = false;
+        print_status(false, &self.sites);
+        Ok(())
     }
 }
 
@@ -489,7 +554,7 @@ fn restore_display_modes(modes: &[(String, String, String)]) {
     if modes.is_empty() {
         return;
     }
-    println!("[*] restoring desktop display modes...");
+    info!("restoring desktop display modes");
     for (output, mode, rate) in modes {
         let _ = Command::new("xrandr")
             .args(["--output", output, "--mode", mode, "--rate", rate])
@@ -519,11 +584,10 @@ fn i3_fullscreen_game_window() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    println!(
-        "[*] i3: fullscreened the game window so borderless covers the whole output\n\
-         [*]   (picom then presents it directly — no extra latency). If it stays\n\
-         [*]   tiled, add this to your i3 config for a permanent fix:\n\
-         [*]     for_window [title=\"Counter-Strike\"] fullscreen enable"
+    info!("i3 fullscreened the borderless game window");
+    info!(
+        rule = r#"for_window [title="Counter-Strike"] fullscreen enable"#,
+        "add this i3 rule if the window remains tiled"
     );
 }
 
@@ -586,13 +650,16 @@ fn launch_css(css_dir: &Path, extra_args: &[String]) -> std::io::Result<Child> {
                 default_args.push(w.to_string());
                 default_args.push("-h".into());
                 default_args.push(h.to_string());
-                println!(
-                    "[*] display: borderless windowed {w}x{h} (BHOPFIX_FULLSCREEN=1 for exclusive fullscreen)"
+                info!(
+                    width = w,
+                    height = h,
+                    "using borderless windowed display; set BHOPFIX_FULLSCREEN=1 for exclusive"
                 );
             }
             None => {
-                println!(
-                    "[*] display: borderless windowed (resolution auto-detect failed; BHOPFIX_FULLSCREEN=1 for exclusive)"
+                warn!(
+                    "display resolution auto-detection failed; using borderless windowed; \
+                     set BHOPFIX_FULLSCREEN=1 for exclusive"
                 );
             }
         }
@@ -624,9 +691,9 @@ fn launch_css(css_dir: &Path, extra_args: &[String]) -> std::io::Result<Child> {
         let lib = dir.join("libbhopfix.so");
         if lib.exists() {
             preload_parts.push(lib.to_string_lossy().into_owned());
-            println!("[*] injecting libbhopfix.so (m_rawinput 2 hooks)");
+            info!("injecting libbhopfix.so");
         } else {
-            println!("[*] libbhopfix.so not found next to binary; skipping m_rawinput 2 hooks");
+            warn!("libbhopfix.so is not beside the executable; skipping feature hooks");
         }
     }
     harden_launch_env(&mut cmd, &mut preload_parts);
@@ -666,9 +733,7 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
                 }
             }
             if dropped {
-                println!(
-                    "[*] hardening: excluded gameoverlayrenderer.so from LD_PRELOAD (#11446 stutter guard)"
-                );
+                info!("excluded gameoverlayrenderer.so from LD_PRELOAD");
             }
         }
     } else if let Ok(existing) = std::env::var("LD_PRELOAD") {
@@ -685,10 +750,9 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
     // any assembled entry) contains whitespace — the hook would silently not
     // inject.
     if let Some(bad) = preload_parts.iter().find(|p| p.contains([' ', '\t'])) {
-        println!(
-            "[!] warning: LD_PRELOAD entry contains whitespace and will NOT load\n\
-             [!]   ({bad})\n\
-             [!]   glibc can't quote preload paths — install to a space-free path."
+        warn!(
+            path = %bad,
+            "LD_PRELOAD entry contains whitespace and will not load; install to a space-free path"
         );
     }
 
@@ -711,7 +775,7 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
             }
             v.push_str("d3d9.maxFrameLatency = 1");
             cmd.env("DXVK_CONFIG", v);
-            println!("[*] hardening: DXVK_CONFIG d3d9.maxFrameLatency = 1");
+            info!("set DXVK_CONFIG d3d9.maxFrameLatency=1");
         }
     }
 
@@ -729,9 +793,9 @@ fn harden_launch_env(cmd: &mut Command, preload_parts: &mut Vec<String>) {
         if pulse_socket_present() {
             cmd.env("SDL_AUDIODRIVER", "pulseaudio"); // classic SDL2 name
             cmd.env("SDL_AUDIO_DRIVER", "pulseaudio"); // SDL3/sdl2-compat name
-            println!("[*] hardening: SDL audio backend pinned to pulseaudio (#8013 guard)");
+            info!("pinned SDL audio backend to PulseAudio");
         } else {
-            println!("[*] hardening: no PulseAudio socket found; leaving SDL audio on auto-detect");
+            info!("no PulseAudio socket found; leaving SDL audio on auto-detect");
         }
     }
 }
@@ -779,6 +843,7 @@ fn print_usage() {
          Toggle prediction at runtime with Scroll Lock or: kill -USR1 <pid of this tool>\n\
          \n\
          ENVIRONMENT (launcher):\n\
+         \x20 BHOPFIX_LOG=<filter>       controller tracing filter (for example: debug)\n\
          \x20 BHOPFIX_FULLSCREEN=1       exclusive fullscreen instead of borderless windowed\n\
          \x20 CSS_FREQ=<hz|off>          -freq for exclusive fullscreen (default 144)\n\
          \x20 BHOPFIX_NO_FORCE=1         do not force `+m_rawinput 2` on the command line\n\
@@ -823,14 +888,13 @@ pub fn main() {
         File::open(path)
             .and_then(|mut f| f.read_to_end(&mut buf))
             .unwrap_or_else(|e| {
-                eprintln!("cannot read {path}: {e}");
+                error!(%path, %e, "cannot read signature input");
                 std::process::exit(1);
             });
-        let hits = scan(&buf);
-        if hits.is_empty() {
-            println!("no signatures matched in {path}");
+        let hits = scan(&buf).unwrap_or_else(|error| {
+            error!(%path, %error, "signature scan failed");
             std::process::exit(1);
-        }
+        });
         for (si, off) in hits {
             let s = &SIGS[si];
             println!(
@@ -849,7 +913,7 @@ pub fn main() {
         let css_dir = match args.get(1) {
             Some(path) if !path.starts_with('-') && args.len() == 2 => PathBuf::from(path),
             None => find_css_dir().unwrap_or_else(|| {
-                eprintln!("[!] could not locate Counter-Strike Source install");
+                error!("could not locate Counter-Strike: Source installation");
                 std::process::exit(1);
             }),
             _ => {
@@ -858,14 +922,14 @@ pub fn main() {
             }
         };
         if !css_dir.join("cstrike").is_dir() {
-            eprintln!("[!] {} has no cstrike/ directory", css_dir.display());
+            error!(path = %css_dir.display(), "game root has no cstrike directory");
             std::process::exit(1);
         }
-        println!("[*] CS:S found at {}", css_dir.display());
+        info!(path = %css_dir.display(), "found Counter-Strike: Source");
         let n = bhopfix_core::pakfix::sweep(&css_dir);
-        println!(
-            "[*] case-fix sweep done: {n} file(s) extracted to cstrike/download\n\
-             [*] (a running game picks them up on the next map load — `retry` in console)"
+        info!(
+            extracted = n,
+            "case-fix sweep complete; a running game sees files on the next map load"
         );
         return;
     }
@@ -884,23 +948,22 @@ pub fn main() {
     if args.first().map(String::as_str) == Some("--attach") {
         pid = match args.get(1) {
             Some(pid_str) => pid_str.parse().unwrap_or_else(|_| {
-                eprintln!("invalid pid: {pid_str}");
+                error!(value = %pid_str, "invalid PID");
                 std::process::exit(2);
             }),
             None => find_game_pid().unwrap_or_else(|| {
-                eprintln!("[!] no running CS:S process found");
+                error!("no running Counter-Strike: Source process found");
                 std::process::exit(1);
             }),
         };
         if !cmdline_has_insecure(pid) {
-            eprintln!(
-                "[!] the game was NOT started with -insecure.\n\
-                 [!] refusing to patch (same policy as the original BunnyhopAPE).\n\
-                 [!] restart the game through this tool instead."
+            error!(
+                "game was not started with -insecure; refusing to patch; \
+                 restart it through this tool"
             );
             std::process::exit(1);
         }
-        println!("[*] attaching to running game (pid {pid})");
+        info!(pid, "attaching to running game");
     } else {
         let extra: Vec<String> = if let Some(pos) = args.iter().position(|a| a == "--") {
             args[pos + 1..].to_vec()
@@ -908,19 +971,19 @@ pub fn main() {
             Vec::new()
         };
         let Some(css_dir) = find_css_dir() else {
-            eprintln!("[!] could not locate Counter-Strike Source install");
+            error!("could not locate Counter-Strike: Source installation");
             std::process::exit(1);
         };
-        println!("[*] CS:S found at {}", css_dir.display());
+        info!(path = %css_dir.display(), "found Counter-Strike: Source");
         // Linux case-folding fix (Source-1-Games#6868) for maps already on
         // disk, before the game boots; newly downloaded maps are handled at
         // runtime by libbhopfix.so.
         let fixed = bhopfix_core::pakfix::sweep(&css_dir);
         if fixed > 0 {
-            println!("[*] case-fix: extracted {fixed} uppercase-packed file(s) from map pakfiles");
+            info!(extracted = fixed, "case-fixed uppercase map assets");
         }
-        println!("[*] launching CS:S with -insecure -novid ...");
-        println!("[*] tip: run this tool via `gamemoderun bunnyhopfix` to keep gamemode");
+        info!("launching CS:S with -insecure -novid");
+        info!("tip: use `gamemoderun bunnyhopfix` to keep GameMode active");
         saved_modes = save_display_modes();
         match launch_css(&css_dir, &extra) {
             Ok(c) => {
@@ -928,14 +991,14 @@ pub fn main() {
                 child = Some(c);
             }
             Err(e) => {
-                eprintln!("[!] failed to launch CS:S: {e}");
+                error!(%e, "failed to launch CS:S");
                 std::process::exit(1);
             }
         }
     }
 
     // --- wait for client.so --------------------------------------------------
-    println!("[*] waiting for the game process + client.so to load...");
+    info!("waiting for the game process and client.so");
     let mut patcher = loop {
         if GOT_TERM.load(Ordering::SeqCst) {
             return;
@@ -943,7 +1006,7 @@ pub fn main() {
         if let Some(c) = child.as_mut()
             && let Ok(Some(status)) = c.try_wait()
         {
-            println!("[*] launcher exited before the game loaded ({status})");
+            warn!(%status, "launcher exited before the game loaded");
             return;
         }
         // Launch mode: resolve the real game process (a cstrike_linux64
@@ -954,7 +1017,7 @@ pub fn main() {
             match find_game_pid_under(wp) {
                 Some(gp) => {
                     pid = gp;
-                    println!("[*] game process is pid {pid}");
+                    info!(pid, "resolved game process");
                 }
                 None => {
                     thread::sleep(Duration::from_millis(250));
@@ -968,7 +1031,7 @@ pub fn main() {
             match Patcher::discover(pid) {
                 Ok(p) => break p,
                 Err(e) => {
-                    eprintln!("[!] {e}; retrying...");
+                    warn!(%e, "patch discovery failed; retrying");
                     thread::sleep(Duration::from_secs(1));
                 }
             }
@@ -977,8 +1040,15 @@ pub fn main() {
         }
     };
 
-    println!("[*] found {} patch site(s)", patcher.sites.len());
-    patcher.enable();
+    info!(
+        sites = patcher.sites.len(),
+        "resolved prediction patch sites"
+    );
+    if let Err(error) = patcher.enable() {
+        error!(%error, "failed to apply prediction patches");
+        restore_display_modes(&saved_modes);
+        return;
+    }
 
     // Drop any SIGUSR1 that arrived during the (possibly long) wait for the
     // game to load, so it doesn't immediately toggle the patch back off.
@@ -1001,19 +1071,24 @@ pub fn main() {
         thread::sleep(Duration::from_millis(100));
 
         if GOT_TERM.load(Ordering::SeqCst) {
-            println!("\n[*] restoring original bytes and exiting");
-            if patcher.enabled {
-                patcher.disable();
+            info!("restoring original bytes and exiting");
+            if patcher.enabled
+                && let Err(error) = patcher.disable()
+            {
+                error!(%error, "failed to restore prediction patches");
             }
             restore_display_modes(&saved_modes);
             return;
         }
 
         if GOT_SIGUSR1.swap(false, Ordering::SeqCst) {
-            if patcher.enabled {
-                patcher.disable();
+            let result = if patcher.enabled {
+                patcher.disable()
             } else {
-                patcher.enable();
+                patcher.enable()
+            };
+            if let Err(error) = result {
+                warn!(%error, "prediction toggle failed");
             }
         }
 
@@ -1021,10 +1096,13 @@ pub fn main() {
             let sl = scroll_lock_on();
             if sl != last_scroll {
                 last_scroll = sl;
-                if patcher.enabled {
-                    patcher.disable();
+                let result = if patcher.enabled {
+                    patcher.disable()
                 } else {
-                    patcher.enable();
+                    patcher.enable()
+                };
+                if let Err(error) = result {
+                    warn!(%error, "prediction toggle failed");
                 }
             }
         }
@@ -1038,7 +1116,7 @@ pub fn main() {
             .map(|c| matches!(c.try_wait(), Ok(Some(_))))
             .unwrap_or(false);
         if client_so_region(pid).is_none() || child_gone {
-            println!("[*] game exited");
+            info!("game exited");
             restore_display_modes(&saved_modes);
             return; // Patcher::drop restores bytes if still enabled
         }

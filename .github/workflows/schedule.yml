@@ -7,7 +7,7 @@ name: Weekly
 #   * the canary reports toolchain rot even in a week with no commits at all.
 on:
   schedule:
-    - cron: '0 5 * * 1'   # Mondays, 05:00 UTC
+    - cron: "0 5 * * 1" # Mondays, 05:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -147,22 +147,14 @@ jobs:
         if: steps.chk.outputs.changed == 'true'
         run: cargo build --workspace --release
 
-      # Statically link the CRT so the shipped `bunnyhopfix.exe` is a true
-      # drop-and-run download with no VC++ redistributable dependency — the
-      # single-file asset users know from the C++ 1.0 release, and the same
-      # flag ci.yml and release.yml build their Windows assets with.
-      # On this `-gnu`/zig path mingw already imports the OS UCRT rather than
-      # VCRUNTIME140, so the flag changes nothing here; it is kept so the three
-      # Windows builds cannot silently drift apart. Do not remove.
-      #
-      # Step-scoped on purpose: this job also builds Linux natively above, and
-      # `libbhopfix.so` is an LD_PRELOAD cdylib that must keep linking the
-      # system glibc dynamically.
+      # Statically link the CRT so the Windows controller/DLL pair needs no
+      # Visual C++ redistributable. Step-scoped because this job also builds
+      # Linux natively and libbhopfix.so must keep using the system glibc.
       - name: Cross-build windows
         if: steps.chk.outputs.changed == 'true'
         env:
           RUSTFLAGS: -C target-feature=+crt-static
-        run: cargo zigbuild --release -p bunnyhopfix --target x86_64-pc-windows-gnu
+        run: cargo zigbuild --workspace --release --target x86_64-pc-windows-gnu
 
       - name: Package
         if: steps.chk.outputs.changed == 'true'
@@ -170,6 +162,7 @@ jobs:
           test -x target/release/bunnyhopfix
           test -f target/release/libbhopfix.so
           test -f target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe
+          test -f target/x86_64-pc-windows-gnu/release/bhopfix.dll
           mkdir -p dist
           tar -czf dist/bunnyhopfix-nightly-x86_64-linux.tar.gz \
             --transform 's,^target/release/,,' \
@@ -178,9 +171,10 @@ jobs:
             README.md \
             LICENSE \
             verify-live.sh
-          cp target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe dist/bunnyhopfix.exe
           zip -qj dist/bunnyhopfix-nightly-x86_64-windows.zip \
-            target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe README.md LICENSE
+            target/x86_64-pc-windows-gnu/release/bunnyhopfix.exe \
+            target/x86_64-pc-windows-gnu/release/bhopfix.dll \
+            README.md LICENSE
           (cd dist && sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
       - name: Move the nightly tag
@@ -202,21 +196,16 @@ jobs:
             [`${{ steps.chk.outputs.short }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.chk.outputs.sha }}),
             rebuilt automatically every Monday when `dev` has moved.
 
-            **This is not a tested release.** It has passed CI and nothing else:
-            no live game verified it. For a build that a human ran against a real
-            Counter-Strike: Source, use the newest `v*` release.
+            **This is a rolling CI build.** It passed the repository checks but
+            this exact commit may not have been run against a live game. Use the
+            newest `v*` release for the human-verified build.
 
-            `bunnyhopfix.exe` appears here and not on a tagged release: its
-            byte signature is upstream's (the C++ bunnyhopfix 1.0 shipped it),
-            but the code around it — process lookup, reading `-insecure` out of
-            the WOW64 PEB, the memory write, the Scroll Lock toggle, restoring
-            the bytes on exit — has not yet been run against a real Windows
-            CS:S. It ships in releases once that verification passes.
+            The Windows zip contains the required adjacent pair:
+            `bunnyhopfix.exe` and `bhopfix.dll`.
 
             Assets are replaced in place, so the download links stay stable and
             always point at the newest rolling build.
           files: |
             dist/bunnyhopfix-nightly-x86_64-linux.tar.gz
             dist/bunnyhopfix-nightly-x86_64-windows.zip
-            dist/bunnyhopfix.exe
             dist/SHA256SUMS.txt

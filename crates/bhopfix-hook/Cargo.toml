@@ -1,21 +1,25 @@
 [package]
 name = "bhopfix-hook"
-description = "LD_PRELOAD hook library for bunnyhopfix: tick-aligned raw mouse input, viewpunch removal, fastdl map hijack, engine console glue"
+description = "Injected bunnyhopfix hook library: raw input, viewpunch, fastdl and engine integrations"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-
-# Injected into the game with LD_PRELOAD -> target/release/libbhopfix.so.
-# Linux only: the whole crate is `#![cfg(unix)]`.
+# Injected into the game with LD_PRELOAD on Linux or LoadLibraryW on Windows.
 [lib]
 name = "bhopfix"
 crate-type = ["cdylib"]
 
 [dependencies]
 bhopfix-core.workspace = true
+sha1.workspace = true
+
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+bzip2 = "0.6.1"
 
 [lints]
 workspace = true

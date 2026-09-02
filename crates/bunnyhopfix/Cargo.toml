@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 bhopfix-core.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # The Windows backend talks to the Win32 API directly (raw `extern "system"`
 # declarations), so libc is a Linux-only dependency.

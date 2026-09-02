@@ -92,25 +92,51 @@ jobs:
           path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
           if-no-files-found: error
 
-  # There is deliberately no Windows job here. The Windows backend builds on
-  # every push (ci.yml: `build-windows` natively, `cross-windows` via zig) so it
-  # cannot rot, but nobody has yet run `bunnyhopfix.exe` against a real Windows
-  # Counter-Strike: Source. The byte signature is upstream's — the C++
-  # bunnyhopfix 1.0 shipped it to real users — but the code around it (Toolhelp
-  # enumeration, the WOW64 PEB command-line read, VirtualProtectEx +
-  # WriteProcessMemory, the Scroll Lock toggle, restore-on-exit) has never
-  # executed on Windows. Publishing a binary nobody has run contradicts how the
-  # rest of this tool behaves: it validates every slot against the module file
-  # before writing and disables a feature rather than guess.
-  #
-  # The weekly `nightly` prerelease (schedule.yml) still carries a Windows
-  # build, so the binary exists to be checked. Verification against a real
-  # install is pending; once it passes, this job comes back — as a deliberate
-  # commit, alongside the README/CHANGELOG/CONTRIBUTING changes.
+  windows:
+    name: build windows zip
+    needs: meta
+    if: needs.meta.outputs.release == 'true'
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      - name: Package
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        shell: pwsh
+        run: |
+          $files = @(
+            "target/release/bunnyhopfix.exe",
+            "target/release/bhopfix.dll",
+            "README.md",
+            "LICENSE"
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) { throw "missing release file: $file" }
+          }
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item $files package/
+          Compress-Archive -Path package/* `
+            -DestinationPath "bunnyhopfix-$env:TAG-x86_64-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
+          if-no-files-found: error
 
   publish:
     name: tag and publish
-    needs: [meta, linux]
+    needs: [meta, linux, windows]
     if: needs.meta.outputs.release == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -211,4 +237,5 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
+            dist/bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
             dist/SHA256SUMS.txt
