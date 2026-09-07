@@ -16,7 +16,7 @@ categories = ["games"]
 [workspace.dependencies]
 bhopfix-core = { path = "crates/bhopfix-core" }
 libc = "0.2"
-sha1 = "0.10.6"
+sha1 = "0.11.0"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "env-filter", "fmt"] }
 
