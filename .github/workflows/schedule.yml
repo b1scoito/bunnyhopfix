@@ -28,7 +28,7 @@ jobs:
     # weather report, not a gate. stable and beta really do fail the run.
     continue-on-error: ${{ matrix.toolchain == 'nightly' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `@v1` (not a branch) because the toolchain comes from the matrix and
       # `uses:` cannot be interpolated.
@@ -103,7 +103,7 @@ jobs:
     steps:
       # `dev` is where work lands; `main` only moves on a release, so a nightly
       # built from `main` would just be the last release rebuilt.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: dev
           fetch-depth: 0
