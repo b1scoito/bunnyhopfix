@@ -86,7 +86,7 @@ jobs:
             LICENSE \
             verify-live.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-linux.tar.gz
@@ -128,7 +128,7 @@ jobs:
           Compress-Archive -Path package/* `
             -DestinationPath "bunnyhopfix-$env:TAG-x86_64-windows.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: bunnyhopfix-${{ needs.meta.outputs.tag }}-x86_64-windows.zip
